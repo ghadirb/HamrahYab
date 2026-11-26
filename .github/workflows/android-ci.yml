@@ -40,7 +40,70 @@ jobs:
           missing = expected - actual
           assert not missing, f"Missing tables: {sorted(missing)}"
           assert not list(db.execute("PRAGMA foreign_key_check")), "Foreign key violations"
-          print(f"Validated {len(expected)} D1 tables and foreign keys.")
+
+          # Exercise the exact invitation insert/accept/upsert SQL against SQLite.
+          now = 1_800_000_000_000
+          db.executemany(
+              "INSERT INTO accounts (id, created_at_ms) VALUES (?, ?)",
+              [("account-a", now), ("account-z", now)]
+          )
+          invitation_insert = """
+              INSERT INTO connection_invitations
+                (id, inviter_account_id, invitee_account_id, code_hash, status, created_at_ms, expires_at_ms)
+              SELECT ?, ?, NULL, ?, 'pending', ?, ?
+              WHERE (SELECT COUNT(*) FROM connection_invitations
+                     WHERE inviter_account_id = ? AND created_at_ms > ?) < 10
+          """
+          values = ("invite-1", "account-z", "a" * 64, now, now + 1_800_000, "account-z", now - 86_400_000)
+          assert db.execute(invitation_insert, values).rowcount == 1
+          db.execute(
+              "UPDATE connection_invitations SET status='accepted', invitee_account_id=?, responded_at_ms=? "
+              "WHERE id=? AND status='pending' AND expires_at_ms>?",
+              ("account-a", now + 1, "invite-1", now + 1)
+          )
+          connection_upsert = """
+              INSERT INTO family_connections
+                (id, account_a_id, account_b_id, status, created_at_ms, revoked_at_ms)
+              SELECT ?, ?, ?, 'active', ?, NULL
+              WHERE EXISTS (
+                SELECT 1 FROM connection_invitations
+                WHERE id=? AND status='accepted' AND invitee_account_id=? AND responded_at_ms=?
+              )
+              ON CONFLICT(account_a_id, account_b_id) DO UPDATE SET
+                status='active', created_at_ms=excluded.created_at_ms, revoked_at_ms=NULL
+          """
+          upsert_values = ("connection-1", "account-a", "account-z", now + 1, "invite-1", "account-a", now + 1)
+          assert db.execute(connection_upsert, upsert_values).rowcount == 1
+          db.execute(
+              "INSERT INTO sharing_consents (id, owner_account_id, recipient_account_id, scope, granted_at_ms) "
+              "VALUES (?, ?, ?, 'request_location', ?)",
+              ("consent-1", "account-z", "account-a", now)
+          )
+          db.execute(
+              "UPDATE family_connections SET status='revoked', revoked_at_ms=? WHERE id=? AND status='active'",
+              (now + 2, "connection-1")
+          )
+          db.execute(
+              "UPDATE sharing_consents SET revoked_at_ms=? WHERE revoked_at_ms IS NULL "
+              "AND ((owner_account_id=? AND recipient_account_id=?) OR (owner_account_id=? AND recipient_account_id=?))",
+              (now + 2, "account-a", "account-z", "account-z", "account-a")
+          )
+          assert db.execute(
+              "SELECT COUNT(*) FROM sharing_consents WHERE revoked_at_ms IS NOT NULL"
+          ).fetchone()[0] == 1
+          # Re-accepting a fresh invitation reactivates the canonical pair without duplicate rows.
+          db.execute(
+              "INSERT INTO connection_invitations (id, inviter_account_id, code_hash, status, created_at_ms, expires_at_ms) "
+              "VALUES ('invite-2', 'account-z', ?, 'accepted', ?, ?)",
+              ("b" * 64, now + 3, now + 1_800_000)
+          )
+          assert db.execute(connection_upsert, ("connection-2", "account-a", "account-z", now + 4, "invite-2", "account-a", now + 4)).rowcount == 1
+          connection = db.execute(
+              "SELECT id, status FROM family_connections WHERE account_a_id=? AND account_b_id=?",
+              ("account-a", "account-z")
+          ).fetchone()
+          assert connection == ("connection-1", "active"), connection
+          print(f"Validated {len(expected)} D1 tables, foreign keys, invitation SQL, reconnection and consent revocation.")
           PY
 
   backend-worker-tests:
