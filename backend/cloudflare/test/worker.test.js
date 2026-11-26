@@ -408,3 +408,17 @@ test("location upload atomically rechecks target device and approval timestamp",
   assert.ok(insert.includes("AND ? >= lr.responded_at_ms"));
   assert.ok(insert.includes("FROM devices d WHERE d.id = ? AND d.account_id = ? AND d.revoked_at_ms IS NULL"));
 });
+
+test("invitation decline consumes the one-time code without creating a connection", async () => {
+  const { DB, statements, batches } = invitationDb();
+  const response = await worker.fetch(new Request("https://example.test/v1/invitations/decline", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ code: "A".repeat(43) })
+  }), { DB });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "declined");
+  const update = statements.find(item => item.sql.includes("UPDATE connection_invitations SET status = 'declined'"));
+  assert.ok(update);
+  assert.equal(batches.length, 0);
+});
