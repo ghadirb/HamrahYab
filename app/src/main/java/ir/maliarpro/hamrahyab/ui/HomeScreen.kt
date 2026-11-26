@@ -1,5 +1,6 @@
 package ir.maliarpro.hamrahyab.ui
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -26,13 +27,20 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import ir.maliarpro.hamrahyab.core.location.LocationSnapshot
+import ir.maliarpro.hamrahyab.platform.location.OneShotLocationProvider
 
 private data class FeatureItem(
     val title: String,
@@ -55,6 +63,11 @@ fun HamrahYabApp() {
 
 @Composable
 private fun HomeScreen() {
+    val context = LocalContext.current
+    val locationProvider = remember(context) { OneShotLocationProvider(context) }
+    var lastLocation by remember { mutableStateOf<LocationSnapshot?>(null) }
+    var locationStatus by remember { mutableStateOf("برای دریافت موقعیت، دکمه زیر را بزنید.") }
+
     val features = listOf(
         FeatureItem(
             title = "همراهی خانواده",
@@ -152,13 +165,34 @@ private fun HomeScreen() {
         }
 
         item {
+            LocationCaptureCard(
+                lastLocation = lastLocation,
+                status = locationStatus,
+                onCapture = {
+                    locationStatus = "در حال دریافت موقعیت؛ حداکثر تا ۲۰ ثانیه..."
+                    locationProvider.request { result ->
+                        result.fold(
+                            onSuccess = {
+                                lastLocation = it
+                                locationStatus = "موقعیت تازه دریافت شد. این اطلاعات فعلاً فقط روی همین گوشی نمایش داده می‌شود."
+                            },
+                            onFailure = {
+                                locationStatus = it.message ?: "دریافت موقعیت انجام نشد."
+                            }
+                        )
+                    }
+                }
+            )
+        }
+
+        item {
             Text(
                 text = "حریم خصوصی شما مهم است",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = "اشتراک‌گذاری موقعیت فقط با رضایت صاحب دستگاه انجام می‌شود. این نسخه هنوز به سرویس مکان‌یابی یا سرور متصل نیست.",
+                text = "اشتراک‌گذاری موقعیت فقط با رضایت صاحب دستگاه انجام می‌شود. دریافت موقعیت در این نسخه فقط با اقدام مستقیم شما انجام می‌شود و هنوز به سرور ارسال نمی‌شود.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
