@@ -42,19 +42,27 @@ private data class FeatureItem(
 )
 
 @Composable
-fun HamrahYabApp() {
+fun HamrahYabApp(
+    lastLocation: ir.maliarpro.hamrahyab.core.location.LocationSnapshot?,
+    locationStatus: String,
+    onCaptureLocation: () -> Unit
+) {
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
-            HomeScreen()
+            HomeScreen(lastLocation, locationStatus, onCaptureLocation)
         }
     }
 }
 
 @Composable
-private fun HomeScreen() {
+private fun HomeScreen(
+    lastLocation: ir.maliarpro.hamrahyab.core.location.LocationSnapshot?,
+    locationStatus: String,
+    onCaptureLocation: () -> Unit
+) {
     val features = listOf(
         FeatureItem(
             title = "همراهی خانواده",
@@ -137,6 +145,10 @@ private fun HomeScreen() {
                     )
                 }
             }
+        }
+
+        item {
+            LocationCaptureCard(lastLocation, locationStatus, onCaptureLocation)
         }
 
         item {
