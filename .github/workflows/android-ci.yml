@@ -26,6 +26,7 @@ jobs:
           db = sqlite3.connect(":memory:")
           db.execute("PRAGMA foreign_keys = ON")
           db.executescript(sql)
+          db.executescript(Path("backend/cloudflare/migrations/0002_otp_auth.sql").read_text())
 
           expected = {
               "accounts", "devices", "device_sessions", "connection_invitations",
