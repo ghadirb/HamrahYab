@@ -81,8 +81,21 @@ async function route(request, env, actor, requestId, url) {
       SELECT id, requester_account_id AS requesterAccountId, created_at_ms AS createdAtMs, expires_at_ms AS expiresAtMs
       FROM location_requests
       WHERE owner_account_id = ? AND target_device_id = ? AND status = 'pending' AND expires_at_ms > ?
+        AND EXISTS (
+          SELECT 1 FROM family_connections c
+          WHERE c.status = 'active'
+            AND ((c.account_a_id = location_requests.requester_account_id AND c.account_b_id = location_requests.owner_account_id)
+              OR (c.account_b_id = location_requests.requester_account_id AND c.account_a_id = location_requests.owner_account_id))
+        )
+        AND EXISTS (
+          SELECT 1 FROM sharing_consents sc
+          WHERE sc.owner_account_id = location_requests.owner_account_id
+            AND sc.recipient_account_id = location_requests.requester_account_id
+            AND sc.scope = 'request_location' AND sc.revoked_at_ms IS NULL
+            AND sc.granted_at_ms <= ? AND (sc.expires_at_ms IS NULL OR sc.expires_at_ms > ?)
+        )
       ORDER BY created_at_ms ASC LIMIT 50
-    `).bind(actor.account_id, actor.device_id, nowMs()).all();
+    `).bind(actor.account_id, actor.device_id, nowMs(), nowMs(), nowMs()).all();
     return json({ requests: rows.results || [] });
   }
   const createRequestMatch = path.match(/^\/v1\/connections\/([A-Za-z0-9_-]{12,80})\/location-requests$/);
@@ -131,6 +144,21 @@ async function route(request, env, actor, requestId, url) {
       return fail(400, "invalid_decision", "تصمیم باید approve یا deny باشد", requestId);
     }
     const now = nowMs();
+    const requestRow = await env.DB.prepare(`
+      SELECT requester_account_id FROM location_requests
+      WHERE id = ? AND owner_account_id = ? AND target_device_id = ?
+        AND status = 'pending' AND expires_at_ms > ?
+      LIMIT 1
+    `).bind(responseMatch[1], actor.account_id, actor.device_id, now).first();
+    if (!requestRow) return fail(409, "request_unavailable", "درخواست منقضی یا قبلاً پاسخ داده شده است", requestId);
+    if (body.decision === "approve") {
+      if (!await isConnected(env, requestRow.requester_account_id, actor.account_id)) {
+        return fail(403, "connection_revoked", "ارتباط این درخواست دیگر فعال نیست", requestId);
+      }
+      if (!await hasConsent(env, actor.account_id, requestRow.requester_account_id, "request_location", now)) {
+        return fail(403, "consent_required", "اجازه درخواست موقعیت لغو شده است", requestId);
+      }
+    }
     const status = body.decision === "approve" ? "approved" : "denied";
     const result = await env.DB.prepare(`
       UPDATE location_requests SET status = ?, responded_at_ms = ?
@@ -161,7 +189,11 @@ async function route(request, env, actor, requestId, url) {
       WHERE id = ? AND owner_account_id = ? AND target_device_id = ?
         AND status = 'approved' AND expires_at_ms > ?
     `).bind(locationMatch[1], actor.account_id, actor.device_id, now).first();
-    if (!pending || !await hasConsent(env, actor.account_id, pending.requester_account_id, "request_location", now)) {
+    if (!pending) return fail(403, "consent_required", "درخواست تأییدشده و معتبری برای ارسال موقعیت وجود ندارد", requestId);
+    if (!await isConnected(env, pending.requester_account_id, actor.account_id)) {
+      return fail(403, "connection_revoked", "ارتباط پیش از ارسال موقعیت لغو شده است", requestId);
+    }
+    if (!await hasConsent(env, actor.account_id, pending.requester_account_id, "request_location", now)) {
       return fail(403, "consent_required", "اجازه فعال برای ارسال موقعیت وجود ندارد", requestId);
     }
     await env.DB.prepare(`
