@@ -148,7 +148,7 @@ async function handleAuth(request, env, requestId, url) {
       sent = false;
     }
     if (!sent) {
-      await env.DB.prepare("DELETE FROM otp_challenges WHERE id = ? AND status = 'pending'")
+      await env.DB.prepare("UPDATE otp_challenges SET status = 'expired' WHERE id = ? AND status = 'pending'")
         .bind(challengeId).run();
       return fail(503, "otp_delivery_failed", "ارسال کد ورود انجام نشد؛ بعداً دوباره تلاش کنید", requestId);
     }
@@ -166,7 +166,7 @@ async function handleAuth(request, env, requestId, url) {
     if (deviceName.length < 1 || deviceName.length > 80) {
       return fail(400, "invalid_device_name", "نام دستگاه باید بین ۱ تا ۸۰ نویسه باشد", requestId);
     }
-    if (!env.DB) return fail(503, "service_unavailable", "پایگاه داده آماده نیست", requestId);
+    if (!env.DB || typeof env.OTP_PEPPER !== "string" || env.OTP_PEPPER.length < 32) return fail(503, "service_unavailable", "سرویس احراز هویت آماده نیست", requestId);
     const now = nowMs();
     const codeHash = await sha256Hex(env.OTP_PEPPER + ":" + body.challengeId + ":" + body.code);
     const verified = await env.DB.prepare(`
