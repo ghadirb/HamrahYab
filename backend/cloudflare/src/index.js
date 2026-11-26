@@ -178,8 +178,11 @@ async function route(request, env, actor, requestId, url) {
     if (!c) return fail(404, "connection_not_found", "ارتباط فعال پیدا نشد", requestId);
     const recipient = c.account_a_id === actor.account_id ? c.account_b_id : c.account_a_id;
     const consentId = crypto.randomUUID();
-    const result = await env.DB.prepare("INSERT INTO sharing_consents (id, owner_account_id, recipient_account_id, scope, granted_at_ms, expires_at_ms) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM family_connections c WHERE c.id = ? AND c.status = 'active' AND ((c.account_a_id = ? AND c.account_b_id = ?) OR (c.account_b_id = ? AND c.account_a_id = ?)))").bind(consentId, actor.account_id, recipient, body.scope, now, expiresAt, consentGrantMatch[1], actor.account_id, recipient, actor.account_id, recipient).run();
-    if (!result.meta?.changes) return fail(409, "connection_unavailable", "ارتباط پیش از ثبت رضایت تغییر کرده است", requestId);
+    const results = await env.DB.batch([
+      env.DB.prepare("UPDATE sharing_consents SET revoked_at_ms = ? WHERE owner_account_id = ? AND recipient_account_id = ? AND scope = ? AND revoked_at_ms IS NULL").bind(now, actor.account_id, recipient, body.scope),
+      env.DB.prepare("INSERT INTO sharing_consents (id, owner_account_id, recipient_account_id, scope, granted_at_ms, expires_at_ms) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM family_connections c WHERE c.id = ? AND c.status = 'active' AND ((c.account_a_id = ? AND c.account_b_id = ?) OR (c.account_b_id = ? AND c.account_a_id = ?)))").bind(consentId, actor.account_id, recipient, body.scope, now, expiresAt, consentGrantMatch[1], actor.account_id, recipient, actor.account_id, recipient)
+    ]);
+    if (!results?.[1]?.meta?.changes) return fail(409, "connection_unavailable", "ارتباط پیش از ثبت رضایت تغییر کرده است", requestId);
     await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'consent_granted', ?, ?)").bind(crypto.randomUUID(), actor.account_id, consentId, now).run();
     return json({ consentId, connectionId: consentGrantMatch[1], scope: body.scope, expiresAtMs: expiresAt }, 201);
   }
