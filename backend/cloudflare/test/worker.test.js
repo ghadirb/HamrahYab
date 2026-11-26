@@ -99,3 +99,60 @@ test("location request creation is limited and expires within five minutes", asy
   assert.ok(body.expiresAtMs <= Date.now() + 5 * 60 * 1000 + 100);
   assert.ok(statements.some((entry) => entry.sql.includes("INSERT INTO location_requests")));
 });
+
+function responseDb({ connected = true, consent = true } = {}) {
+  const writes = [];
+  const DB = {
+    prepare(sql) {
+      const statement = {
+        values: [],
+        bind(...values) { this.values = values; return this; },
+        async first() {
+          if (sql.includes("SELECT s.id AS session_id")) {
+            return { session_id: "session-123", device_id: "device-target-123", account_id: "owner-456" };
+          }
+          if (sql.includes("SELECT requester_account_id FROM location_requests")) {
+            return { requester_account_id: "requester-123" };
+          }
+          if (sql.includes("SELECT id FROM family_connections")) return connected ? { id: "connection-1" } : null;
+          if (sql.includes("SELECT id FROM sharing_consents")) return consent ? { id: "consent-1" } : null;
+          return null;
+        },
+        async run() { writes.push(sql); return { meta: { changes: 1 } }; },
+        async all() { return { results: [] }; }
+      };
+      return statement;
+    }
+  };
+  return { DB, writes };
+}
+
+test("approval is rejected after the family connection is revoked", async () => {
+  const { DB, writes } = responseDb({ connected: false, consent: true });
+  const response = await worker.fetch(
+    new Request("https://example.test/v1/location-requests/request-123456/respond", {
+      method: "POST",
+      headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve" })
+    }),
+    { DB }
+  );
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, "connection_revoked");
+  assert.equal(writes.some((sql) => sql.includes("UPDATE location_requests SET status")), false);
+});
+
+test("approval is rejected after location consent is revoked", async () => {
+  const { DB, writes } = responseDb({ connected: true, consent: false });
+  const response = await worker.fetch(
+    new Request("https://example.test/v1/location-requests/request-123456/respond", {
+      method: "POST",
+      headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve" })
+    }),
+    { DB }
+  );
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, "consent_required");
+  assert.equal(writes.some((sql) => sql.includes("UPDATE location_requests SET status")), false);
+});
