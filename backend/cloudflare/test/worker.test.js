@@ -111,7 +111,7 @@ function responseDb({ connected = true, consent = true } = {}) {
           if (sql.includes("SELECT s.id AS session_id")) {
             return { session_id: "session-123", device_id: "device-target-123", account_id: "owner-456" };
           }
-          if (sql.includes("SELECT requester_account_id FROM location_requests")) {
+          if (sql.includes("SELECT requester_account_id FROM location_requests") || sql.includes("SELECT requester_account_id, owner_account_id FROM location_requests")) {
             return { requester_account_id: "requester-123" };
           }
           if (sql.includes("SELECT id FROM family_connections")) return connected ? { id: "connection-1" } : null;
