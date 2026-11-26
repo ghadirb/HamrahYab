@@ -287,7 +287,9 @@ export default {
       return json({ status: "ok", service: "hamrahyab-api", version: 1 });
     }
     if (!url.pathname.startsWith("/v1/")) return fail(404, "not_found", "مسیر مورد نظر پیدا نشد", requestId);
-    if (!["GET", "POST"].includes(request.method)) return fail(405, "method_not_allowed", "روش درخواست پشتیبانی نمی‌شود", requestId, { allow: "GET, POST, OPTIONS" });
+    if (!["GET", "POST"].includes(request.method)) {
+      return json({ error: { code: "method_not_allowed", message: "روش درخواست پشتیبانی نمی‌شود", requestId } }, 405, { allow: "GET, POST, OPTIONS" });
+    }
     if (!env.DB) return fail(503, "service_unavailable", "پایگاه داده آماده نیست", requestId);
     try {
       const actor = await authenticate(request, env);
