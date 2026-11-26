@@ -229,3 +229,41 @@ test("last-location query rechecks active connection and consent in the read sta
   assert.match(read, /family_connections c WHERE c.id = \? AND c.status = 'active'/);
   assert.match(read, /sharing_consents sc WHERE sc.owner_account_id = \?/);
 });
+
+test("consent grant replaces prior active grant and is tied to an active connection", async () => {
+  const { DB, batches } = revocationDb();
+  const response = await worker.fetch(new Request("https://example.test/v1/connections/connection-123456/consents", {
+    method: "PUT",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ scope: "request_location", expiresAtMs: Date.now() + 60_000 })
+  }), { DB });
+  assert.equal(response.status, 201);
+  assert.equal(batches.length, 1);
+  assert.match(batches[0][0].sql, /UPDATE sharing_consents SET revoked_at_ms/);
+  assert.match(batches[0][1].sql, /INSERT INTO sharing_consents/);
+  assert.match(batches[0][1].sql, /family_connections c WHERE c.id = \?/);
+});
+
+test("location upload is rejected after connection revocation", async () => {
+  const { DB, writes } = responseDb({ connected: false, consent: true });
+  const response = await worker.fetch(new Request("https://example.test/v1/location-requests/request-123456/location", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ latitude: 35.7, longitude: 51.4, accuracyMeters: 12, capturedAtMs: Date.now(), source: "gps" })
+  }), { DB });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, "connection_revoked");
+  assert.equal(writes.some(sql => sql.includes("INSERT INTO latest_location_fixes")), false);
+});
+
+test("location upload is rejected after consent revocation", async () => {
+  const { DB, writes } = responseDb({ connected: true, consent: false });
+  const response = await worker.fetch(new Request("https://example.test/v1/location-requests/request-123456/location", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ latitude: 35.7, longitude: 51.4, accuracyMeters: 12, capturedAtMs: Date.now(), source: "gps" })
+  }), { DB });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, "consent_required");
+  assert.equal(writes.some(sql => sql.includes("INSERT INTO latest_location_fixes")), false);
+});
