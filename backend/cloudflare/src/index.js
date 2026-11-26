@@ -354,7 +354,9 @@ async function route(request, env, actor, requestId, url) {
         SELECT 1 FROM location_requests lr
         WHERE lr.id = ? AND lr.owner_account_id = ? AND lr.requester_account_id = ?
           AND lr.target_device_id = ? AND lr.status = 'approved' AND lr.expires_at_ms > ?
+          AND ? >= lr.responded_at_ms
       )
+      AND EXISTS (SELECT 1 FROM devices d WHERE d.id = ? AND d.account_id = ? AND d.revoked_at_ms IS NULL)
       ON CONFLICT(device_id) DO UPDATE SET
         latitude = excluded.latitude, longitude = excluded.longitude,
         accuracy_m = excluded.accuracy_m, captured_at_ms = excluded.captured_at_ms,
@@ -364,7 +366,8 @@ async function route(request, env, actor, requestId, url) {
       actor.device_id, body.latitude, body.longitude, body.accuracyMeters, body.capturedAtMs, now, body.source,
       pending.requester_account_id, actor.account_id, actor.account_id, pending.requester_account_id,
       actor.account_id, pending.requester_account_id, now, now,
-      locationMatch[1], actor.account_id, pending.requester_account_id, actor.device_id, now
+      locationMatch[1], actor.account_id, pending.requester_account_id, actor.device_id, now,
+      body.capturedAtMs, actor.device_id, actor.account_id
     ).run();
     if (!stored.meta?.changes) {
       return fail(403, "authorization_changed", "اجازه یا ارتباط پیش از ثبت موقعیت تغییر کرده است", requestId);
