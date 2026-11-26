@@ -12,6 +12,12 @@ function fail(status, code, message, requestId) {
 function nowMs() { return Date.now(); }
 function validId(value) { return typeof value === "string" && /^[A-Za-z0-9_-]{12,80}$/.test(value); }
 function validNumber(value) { return typeof value === "number" && Number.isFinite(value); }
+function createInvitationCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+}
 function parseBearer(request) {
   const value = request.headers.get("authorization") || "";
   const match = /^Bearer ([A-Za-z0-9._~-]{32,512})$/.exec(value);
@@ -152,6 +158,52 @@ async function route(request, env, actor, requestId, url) {
     `).bind(crypto.randomUUID(), actor.account_id, id, now).run();
     return json({ requestId: id, status: "pending", expiresAtMs: expiresAt }, 201);
   }
+  if (method === "POST" && path === "/v1/invitations") {
+    const now = nowMs();
+    const recent = await env.DB.prepare("SELECT COUNT(*) AS total FROM connection_invitations WHERE inviter_account_id = ? AND created_at_ms > ?")
+      .bind(actor.account_id, now - 24 * 60 * 60 * 1000).first();
+    if ((recent?.total || 0) >= 10) return fail(429, "invitation_limit_reached", "سقف ساخت دعوت روزانه تکمیل شده است", requestId);
+    const code = createInvitationCode();
+    const invitationId = crypto.randomUUID();
+    const expiresAt = now + 30 * 60 * 1000;
+    await env.DB.prepare("INSERT INTO connection_invitations (id, inviter_account_id, invitee_account_id, code_hash, status, created_at_ms, expires_at_ms) VALUES (?, ?, NULL, ?, 'pending', ?, ?)")
+      .bind(invitationId, actor.account_id, await sha256Hex(code), now, expiresAt).run();
+    await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'invitation_created', ?, ?)")
+      .bind(crypto.randomUUID(), actor.account_id, invitationId, now).run();
+    return json({ invitationId, code, expiresAtMs: expiresAt }, 201);
+  }
+  if (method === "POST" && path === "/v1/invitations/accept") {
+    const body = await readJson(request);
+    if (typeof body?.code !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.code)) {
+      return fail(400, "invalid_invitation_code", "کد دعوت معتبر نیست", requestId);
+    }
+    const now = nowMs();
+    const codeHash = await sha256Hex(body.code);
+    const invitation = await env.DB.prepare("SELECT id, inviter_account_id FROM connection_invitations WHERE code_hash = ? AND status = 'pending' AND expires_at_ms > ? AND (invitee_account_id IS NULL OR invitee_account_id = ?) LIMIT 1")
+      .bind(codeHash, now, actor.account_id).first();
+    if (!invitation) return fail(404, "invitation_not_found", "دعوت معتبر یا فعالی پیدا نشد", requestId);
+    if (invitation.inviter_account_id === actor.account_id) return fail(400, "self_invitation", "نمی‌توانید دعوت خودتان را بپذیرید", requestId);
+    const [accountA, accountB] = [actor.account_id, invitation.inviter_account_id].sort();
+    const existing = await env.DB.prepare("SELECT id, status FROM family_connections WHERE account_a_id = ? AND account_b_id = ? LIMIT 1")
+      .bind(accountA, accountB).first();
+    if (existing?.status === "active") return fail(409, "already_connected", "این دو حساب از قبل متصل هستند", requestId);
+    const connectionId = crypto.randomUUID();
+    const results = await env.DB.batch([
+      env.DB.prepare("UPDATE connection_invitations SET status = 'accepted', invitee_account_id = ?, responded_at_ms = ? WHERE id = ? AND status = 'pending' AND expires_at_ms > ? AND (invitee_account_id IS NULL OR invitee_account_id = ?)")
+        .bind(actor.account_id, now, invitation.id, now, actor.account_id),
+      env.DB.prepare("INSERT INTO family_connections (id, account_a_id, account_b_id, status, created_at_ms, revoked_at_ms) SELECT ?, ?, ?, 'active', ?, NULL WHERE EXISTS (SELECT 1 FROM connection_invitations WHERE id = ? AND status = 'accepted' AND invitee_account_id = ? AND responded_at_ms = ?) ON CONFLICT(account_a_id, account_b_id) DO UPDATE SET status = 'active', created_at_ms = excluded.created_at_ms, revoked_at_ms = NULL")
+        .bind(connectionId, accountA, accountB, now, invitation.id, actor.account_id, now)
+    ]);
+    if (!results?.[0]?.meta?.changes || !results?.[1]?.meta?.changes) {
+      return fail(409, "invitation_unavailable", "دعوت هم‌زمان استفاده شده یا منقضی شده است", requestId);
+    }
+    const connection = await env.DB.prepare("SELECT id FROM family_connections WHERE account_a_id = ? AND account_b_id = ? AND status = 'active' LIMIT 1")
+      .bind(accountA, accountB).first();
+    const finalConnectionId = connection?.id || connectionId;
+    await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'invitation_accepted', ?, ?)")
+      .bind(crypto.randomUUID(), actor.account_id, invitation.id, now).run();
+    return json({ invitationId: invitation.id, connectionId: finalConnectionId, status: "active" }, 201);
+  }
   const connectionRevokeMatch = path.match(/^\/v1\/connections\/([A-Za-z0-9_-]{12,80})$/);
   if (method === "DELETE" && connectionRevokeMatch) {
     const c = await env.DB.prepare("SELECT account_a_id, account_b_id FROM family_connections WHERE id = ? AND status = 'active' AND (account_a_id = ? OR account_b_id = ?) LIMIT 1").bind(connectionRevokeMatch[1], actor.account_id, actor.account_id).first();
@@ -160,7 +212,8 @@ async function route(request, env, actor, requestId, url) {
     const now = nowMs();
     const result = await env.DB.batch([
       env.DB.prepare("UPDATE family_connections SET status = 'revoked', revoked_at_ms = ? WHERE id = ? AND status = 'active' AND (account_a_id = ? OR account_b_id = ?)").bind(now, connectionRevokeMatch[1], actor.account_id, actor.account_id),
-      env.DB.prepare("UPDATE location_requests SET status = 'cancelled' WHERE status IN ('pending', 'approved') AND ((requester_account_id = ? AND owner_account_id = ?) OR (requester_account_id = ? AND owner_account_id = ?))").bind(actor.account_id, other, other, actor.account_id)
+      env.DB.prepare("UPDATE location_requests SET status = 'cancelled' WHERE status IN ('pending', 'approved') AND ((requester_account_id = ? AND owner_account_id = ?) OR (requester_account_id = ? AND owner_account_id = ?))").bind(actor.account_id, other, other, actor.account_id),
+      env.DB.prepare("UPDATE sharing_consents SET revoked_at_ms = ? WHERE revoked_at_ms IS NULL AND ((owner_account_id = ? AND recipient_account_id = ?) OR (owner_account_id = ? AND recipient_account_id = ?))").bind(now, actor.account_id, other, other, actor.account_id)
     ]);
     if (!result?.[0]?.meta?.changes) return fail(409, "connection_unavailable", "ارتباط پیش از لغو تغییر کرده است", requestId);
     await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'connection_revoked', ?, ?)").bind(crypto.randomUUID(), actor.account_id, connectionRevokeMatch[1], now).run();
