@@ -150,6 +150,42 @@ async function route(request, env, actor, requestId, url) {
     if (!result?.[0]?.meta?.changes) return fail(409, "connection_unavailable", "ارتباط پیش از لغو تغییر کرده است", requestId);
     return json({ connectionId: connectionRevokeMatch[1], status: "revoked" });
   }
+  const consentGrantMatch = path.match(/^\/v1\/connections\/([A-Za-z0-9_-]{12,80})\/consents$/);
+  if (method === "PUT" && consentGrantMatch) {
+    const body = await readJson(request);
+    const scopes = ["request_location", "view_last_location", "live_sharing", "emergency_location", "manage_geofences", "receive_sos"];
+    if (!scopes.includes(body?.scope)) return fail(400, "invalid_scope", "دامنه رضایت معتبر نیست", requestId);
+    const now = nowMs();
+    const expiresAt = body.expiresAtMs === undefined || body.expiresAtMs === null ? null : body.expiresAtMs;
+    if (expiresAt !== null && (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 365 * 24 * 60 * 60 * 1000)) return fail(400, "invalid_expiry", "زمان انقضای رضایت معتبر نیست", requestId);
+    const c = await env.DB.prepare("SELECT account_a_id, account_b_id FROM family_connections WHERE id = ? AND status = 'active' AND (account_a_id = ? OR account_b_id = ?) LIMIT 1").bind(consentGrantMatch[1], actor.account_id, actor.account_id).first();
+    if (!c) return fail(404, "connection_not_found", "ارتباط فعال پیدا نشد", requestId);
+    const recipient = c.account_a_id === actor.account_id ? c.account_b_id : c.account_a_id;
+    const consentId = crypto.randomUUID();
+    const result = await env.DB.prepare("INSERT INTO sharing_consents (id, owner_account_id, recipient_account_id, scope, granted_at_ms, expires_at_ms) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM family_connections c WHERE c.id = ? AND c.status = 'active' AND ((c.account_a_id = ? AND c.account_b_id = ?) OR (c.account_b_id = ? AND c.account_a_id = ?)))").bind(consentId, actor.account_id, recipient, body.scope, now, expiresAt, consentGrantMatch[1], actor.account_id, recipient, actor.account_id, recipient).run();
+    if (!result.meta?.changes) return fail(409, "connection_unavailable", "ارتباط پیش از ثبت رضایت تغییر کرده است", requestId);
+    await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'consent_granted', ?, ?)").bind(crypto.randomUUID(), actor.account_id, consentId, now).run();
+    return json({ consentId, connectionId: consentGrantMatch[1], scope: body.scope, expiresAtMs: expiresAt }, 201);
+  }
+  const consentRevokeMatch = path.match(/^\/v1\/consents\/([A-Za-z0-9_-]{12,80})$/);
+  if (method === "DELETE" && consentRevokeMatch) {
+    const consent = await env.DB.prepare("SELECT recipient_account_id, scope FROM sharing_consents WHERE id = ? AND owner_account_id = ? AND revoked_at_ms IS NULL LIMIT 1").bind(consentRevokeMatch[1], actor.account_id).first();
+    if (!consent) return fail(404, "consent_not_found", "رضایت فعال پیدا نشد", requestId);
+    const now = nowMs();
+    const revoke = env.DB.prepare("UPDATE sharing_consents SET revoked_at_ms = ? WHERE id = ? AND owner_account_id = ? AND revoked_at_ms IS NULL").bind(now, consentRevokeMatch[1], actor.account_id);
+    if (consent.scope === "request_location") {
+      const results = await env.DB.batch([
+        revoke,
+        env.DB.prepare("UPDATE location_requests SET status = 'cancelled' WHERE requester_account_id = ? AND owner_account_id = ? AND status IN ('pending', 'approved') AND EXISTS (SELECT 1 FROM sharing_consents sc WHERE sc.id = ? AND sc.revoked_at_ms = ?)").bind(consent.recipient_account_id, actor.account_id, consentRevokeMatch[1], now)
+      ]);
+      if (!results?.[0]?.meta?.changes) return fail(409, "consent_unavailable", "رضایت پیش از لغو تغییر کرده است", requestId);
+    } else {
+      const result = await revoke.run();
+      if (!result.meta?.changes) return fail(409, "consent_unavailable", "رضایت پیش از لغو تغییر کرده است", requestId);
+    }
+    await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'consent_revoked', ?, ?)").bind(crypto.randomUUID(), actor.account_id, consentRevokeMatch[1], now).run();
+    return json({ consentId: consentRevokeMatch[1], status: "revoked" });
+  }
   const responseMatch = path.match(/^\/v1\/location-requests\/([A-Za-z0-9_-]{12,80})\/respond$/);
   if (method === "POST" && responseMatch) {
     const body = await readJson(request);
