@@ -93,9 +93,9 @@ jobs:
           ).fetchone()[0] == 1
           # Re-accepting a fresh invitation reactivates the canonical pair without duplicate rows.
           db.execute(
-              "INSERT INTO connection_invitations (id, inviter_account_id, code_hash, status, created_at_ms, expires_at_ms) "
-              "VALUES ('invite-2', 'account-z', ?, 'accepted', ?, ?)",
-              ("b" * 64, now + 3, now + 1_800_000)
+              "INSERT INTO connection_invitations (id, inviter_account_id, invitee_account_id, code_hash, status, created_at_ms, expires_at_ms, responded_at_ms) "
+              "VALUES ('invite-2', 'account-z', 'account-a', ?, 'accepted', ?, ?, ?)",
+              ("b" * 64, now + 3, now + 1_800_000, now + 4)
           )
           assert db.execute(connection_upsert, ("connection-2", "account-a", "account-z", now + 4, "invite-2", "account-a", now + 4)).rowcount == 1
           connection = db.execute(
