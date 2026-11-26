@@ -327,6 +327,7 @@ test("invitation creation returns a high-entropy one-time code and stores only i
   assert.ok(insert);
   assert.equal(insert.values[2].length, 64);
   assert.notEqual(insert.values[2], body.code);
+  assert.match(insert.sql, /SELECT COUNT\\(\\*\\) FROM connection_invitations/);
 });
 
 test("invitation creation enforces a per-account daily issuance cap", async () => {
@@ -367,4 +368,29 @@ test("an account cannot accept its own invitation", async () => {
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, "self_invitation");
   assert.equal(batches.length, 0);
+});
+
+test("invitation acceptance rejects an already active connection", async () => {
+  const { DB, batches } = invitationDb({ existing: { id: "existing-connection", status: "active" } });
+  const response = await worker.fetch(new Request("https://example.test/v1/invitations/accept", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ code: "A".repeat(43) })
+  }), { DB });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, "already_connected");
+  assert.equal(batches.length, 0);
+});
+
+test("invitation acceptance reactivates a revoked canonical connection", async () => {
+  const { DB, batches } = invitationDb({ existing: { id: "old-connection", status: "revoked" } });
+  const response = await worker.fetch(new Request("https://example.test/v1/invitations/accept", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ code: "A".repeat(43) })
+  }), { DB });
+  assert.equal(response.status, 201);
+  assert.equal(batches.length, 1);
+  assert.match(batches[0][1].sql, /DO UPDATE SET status = 'active'/);
+  assert.match(batches[0][1].sql, /revoked_at_ms = NULL/);
 });
