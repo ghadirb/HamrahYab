@@ -103,7 +103,7 @@ async function handleAuth(request, env, requestId, url) {
     const now = nowMs();
     const ip = request.headers.get("cf-connecting-ip") || "unknown";
     const ipHash = await sha256Hex(ip);
-    const limits = await env.DB.prepare(\`
+    const limits = await env.DB.prepare(`
       SELECT
         SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_recent,
         SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_cooldown,
@@ -111,7 +111,7 @@ async function handleAuth(request, env, requestId, url) {
         SUM(CASE WHEN request_ip_hash = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS ip_recent
       FROM otp_challenges
       WHERE created_at_ms > ?
-    \`).bind(phone, now - 15 * 60_000, phone, now - 60_000,
+    `).bind(phone, now - 15 * 60_000, phone, now - 60_000,
       phone, now - 24 * 60 * 60_000, ipHash, now - 15 * 60_000,
       now - 24 * 60 * 60_000).first();
     if ((limits?.phone_recent || 0) >= 3 || (limits?.phone_cooldown || 0) >= 1 ||
@@ -121,7 +121,7 @@ async function handleAuth(request, env, requestId, url) {
     const code = createOtpCode();
     const challengeId = crypto.randomUUID();
     const expiresAt = now + 5 * 60_000;
-    const created = await env.DB.prepare(\`
+    const created = await env.DB.prepare(`
       INSERT INTO otp_challenges
         (id, phone_e164, request_ip_hash, code_hash, status, attempts, created_at_ms, expires_at_ms)
       SELECT ?, ?, ?, ?, 'pending', 0, ?, ?
@@ -129,7 +129,7 @@ async function handleAuth(request, env, requestId, url) {
         AND (SELECT COUNT(*) FROM otp_challenges WHERE phone_e164 = ? AND created_at_ms > ?) < 1
         AND (SELECT COUNT(*) FROM otp_challenges WHERE phone_e164 = ? AND created_at_ms > ?) < 10
         AND (SELECT COUNT(*) FROM otp_challenges WHERE request_ip_hash = ? AND created_at_ms > ?) < 20
-    \`).bind(challengeId, phone, ipHash,
+    `).bind(challengeId, phone, ipHash,
       await sha256Hex(env.OTP_PEPPER + ":" + challengeId + ":" + code), now, expiresAt,
       phone, now - 15 * 60_000, phone, now - 60_000,
       phone, now - 24 * 60 * 60_000, ipHash, now - 15 * 60_000).run();
