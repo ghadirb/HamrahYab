@@ -101,7 +101,7 @@ test("location request creation is limited and expires within five minutes", asy
   assert.match(requestInsert, /SELECT \?, \?, \?, \?, 'pending'/);
   assert.match(requestInsert, /family_connections c WHERE c.id = \? AND c.status = 'active'/);
   assert.match(requestInsert, /sharing_consents sc WHERE sc.owner_account_id = \?/);
-  assert.match(requestInsert, /SELECT COUNT\(\\*\) FROM location_requests/);
+  assert.match(requestInsert, /SELECT COUNT\(\*\) FROM location_requests/);
 });
 
 function responseDb({ connected = true, consent = true } = {}) {
