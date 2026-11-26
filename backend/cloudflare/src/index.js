@@ -126,11 +126,26 @@ async function route(request, env, actor, requestId, url) {
     }
     const id = crypto.randomUUID();
     const expiresAt = now + REQUEST_TTL_MAX_MS;
-    await env.DB.prepare(`
+    const inserted = await env.DB.prepare(`
       INSERT INTO location_requests
         (id, requester_account_id, owner_account_id, target_device_id, status, created_at_ms, expires_at_ms)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?)
-    `).bind(id, actor.account_id, ownerId, target.id, now, expiresAt).run();
+      SELECT ?, ?, ?, ?, 'pending', ?, ?
+      WHERE EXISTS (
+        SELECT 1 FROM family_connections c WHERE c.id = ? AND c.status = 'active'
+          AND ((c.account_a_id = ? AND c.account_b_id = ?) OR (c.account_b_id = ? AND c.account_a_id = ?))
+      )
+      AND EXISTS (
+        SELECT 1 FROM sharing_consents sc WHERE sc.owner_account_id = ? AND sc.recipient_account_id = ?
+          AND sc.scope = 'request_location' AND sc.revoked_at_ms IS NULL
+          AND sc.granted_at_ms <= ? AND (sc.expires_at_ms IS NULL OR sc.expires_at_ms > ?)
+      )
+      AND EXISTS (SELECT 1 FROM devices d WHERE d.id = ? AND d.account_id = ? AND d.revoked_at_ms IS NULL)
+      AND (SELECT COUNT(*) FROM location_requests lr WHERE lr.requester_account_id = ? AND lr.owner_account_id = ?
+        AND lr.status IN ('pending', 'approved') AND lr.expires_at_ms > ?) < 5
+    `).bind(id, actor.account_id, ownerId, target.id, now, expiresAt,
+      createRequestMatch[1], actor.account_id, ownerId, ownerId, actor.account_id,
+      ownerId, actor.account_id, now, now, target.id, ownerId, actor.account_id, ownerId, now).run();
+    if (!inserted.meta?.changes) return fail(403, "authorization_changed", "ارتباط، رضایت یا دستگاه پیش از ایجاد درخواست تغییر کرده است", requestId);
     await env.DB.prepare(`
       INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms)
       VALUES (?, ?, 'location_request_created', ?, ?)
@@ -148,6 +163,7 @@ async function route(request, env, actor, requestId, url) {
       env.DB.prepare("UPDATE location_requests SET status = 'cancelled' WHERE status IN ('pending', 'approved') AND ((requester_account_id = ? AND owner_account_id = ?) OR (requester_account_id = ? AND owner_account_id = ?))").bind(actor.account_id, other, other, actor.account_id)
     ]);
     if (!result?.[0]?.meta?.changes) return fail(409, "connection_unavailable", "ارتباط پیش از لغو تغییر کرده است", requestId);
+    await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'connection_revoked', ?, ?)").bind(crypto.randomUUID(), actor.account_id, connectionRevokeMatch[1], now).run();
     return json({ connectionId: connectionRevokeMatch[1], status: "revoked" });
   }
   const consentGrantMatch = path.match(/^\/v1\/connections\/([A-Za-z0-9_-]{12,80})\/consents$/);
