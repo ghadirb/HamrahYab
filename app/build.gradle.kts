@@ -6,6 +6,7 @@ plugins {
 }
 
 val hamrahYabApiBaseUrl = providers.gradleProperty("HAMRAHYAB_API_BASE_URL").orElse("").get()
+val hamrahYabApiBaseUrlLiteral = "\"${hamrahYabApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
     namespace = "ir.maliarpro.hamrahyab"
@@ -19,7 +20,7 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "API_BASE_URL", "\"\u0024{hamrahYabApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        buildConfigField("String", "API_BASE_URL", hamrahYabApiBaseUrlLiteral)
     }
 
     buildTypes {
