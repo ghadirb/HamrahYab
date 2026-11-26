@@ -173,6 +173,19 @@ async function route(request, env, actor, requestId, url) {
       .bind(crypto.randomUUID(), actor.account_id, invitationId, now).run();
     return json({ invitationId, code, expiresAtMs: expiresAt }, 201);
   }
+  if (method === "POST" && path === "/v1/invitations/decline") {
+    const body = await readJson(request);
+    if (typeof body?.code !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.code)) {
+      return fail(400, "invalid_invitation_code", "کد دعوت معتبر نیست", requestId);
+    }
+    const now = nowMs();
+    const result = await env.DB.prepare("UPDATE connection_invitations SET status = 'declined', invitee_account_id = ?, responded_at_ms = ? WHERE code_hash = ? AND status = 'pending' AND expires_at_ms > ? AND inviter_account_id <> ? AND (invitee_account_id IS NULL OR invitee_account_id = ?)")
+      .bind(actor.account_id, now, await sha256Hex(body.code), now, actor.account_id, actor.account_id).run();
+    if (!result.meta?.changes) return fail(404, "invitation_not_found", "دعوت معتبر یا فعالی پیدا نشد", requestId);
+    await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'invitation_declined', ?, ?)")
+      .bind(crypto.randomUUID(), actor.account_id, "invitation:" + (await sha256Hex(body.code)).slice(0, 16), now).run();
+    return json({ status: "declined" });
+  }
   if (method === "POST" && path === "/v1/invitations/accept") {
     const body = await readJson(request);
     if (typeof body?.code !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.code)) {
