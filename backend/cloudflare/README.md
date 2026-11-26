@@ -15,7 +15,8 @@
 - `GET /v1/me`: اطلاعات حساب و دستگاه از نشست احراز هویت‌شده.
 - `GET /v1/location-requests/inbox`: درخواست‌های منتظر پاسخ برای همان دستگاه.
 - `POST /v1/invitations`: ساخت کد دعوت یک‌بارمصرف ۲۵۶بیتی با اعتبار ۳۰ دقیقه و سقف ۱۰ دعوت روزانه؛ فقط hash ذخیره می‌شود.
-- `POST /v1/invitations/accept`: پذیرش دعوت و ساخت/فعال‌سازی اتصال canonical بین دو حساب.\n- `POST /v1/invitations/decline`: رد دعوت و مصرف کد یک‌بارمصرف.
+- `POST /v1/invitations/accept`: پذیرش دعوت و ساخت/فعال‌سازی اتصال canonical بین دو حساب.
+- `POST /v1/invitations/decline`: رد دعوت و مصرف کد یک‌بارمصرف.
 - `PUT /v1/connections/{connectionId}/consents`: اعطای رضایت `request_location` یا `view_last_location` توسط صاحب داده، با انقضای اختیاری حداکثر یک‌ساله.
 - `DELETE /v1/consents/{consentId}`: لغو رضایت توسط صاحب داده؛ درخواست‌های باز وابسته به `request_location` نیز لغو می‌شوند.
 - `DELETE /v1/connections/{connectionId}`: قطع ارتباط توسط هر یک از دو عضو؛ درخواست‌های باز و رضایت‌های قبلی میان دو حساب نیز لغو می‌شوند.
