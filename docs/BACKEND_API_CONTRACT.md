@@ -29,8 +29,8 @@
 
 ## رضایت و درخواست موقعیت
 
-- `PUT /v1/connections/{connectionId}/consents`: ایجاد یا تغییر دامنه رضایت توسط صاحب داده.
-- `DELETE /v1/consents/{consentId}`: لغو فوری رضایت.
+- `PUT /v1/connections/{connectionId}/consents`: اعطای دامنه رضایت توسط صاحب داده؛ انقضای اختیاری حداکثر یک‌ساله.
+- `DELETE /v1/consents/{consentId}`: لغو رضایت فقط توسط صاحب آن؛ درخواست‌های باز وابسته به `request_location` نیز لغو می‌شوند.
 - `POST /v1/connections/{connectionId}/location-requests`: ایجاد درخواست برای دستگاه فعال طرف مقابل؛ نیازمند اتصال فعال و consent دقیق `request_location`؛ انقضای درخواست حداکثر پنج دقیقه است.
 - `GET /v1/location-requests/inbox`: دریافت درخواست‌های منتظر پاسخ توسط صاحب دستگاه.
 - `POST /v1/location-requests/{requestId}/respond`: تأیید یا رد آشکار درخواست روی دستگاه هدف.
