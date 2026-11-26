@@ -92,6 +92,15 @@ async function route(request, env, actor, requestId, url) {
       return fail(400, "invalid_decision", "تصمیم باید approve یا deny باشد", requestId);
     }
     const now = nowMs();
+    const pending = await env.DB.prepare(`
+      SELECT requester_account_id FROM location_requests
+      WHERE id = ? AND owner_account_id = ? AND target_device_id = ?
+        AND status = 'pending' AND expires_at_ms > ?
+    `).bind(responseMatch[1], actor.account_id, actor.device_id, now).first();
+    if (!pending || !await isConnected(env, actor.account_id, pending.requester_account_id) ||
+        !await hasConsent(env, actor.account_id, pending.requester_account_id, "request_location", now)) {
+      return fail(403, "consent_required", "ارتباط یا اجازه فعال برای این درخواست وجود ندارد", requestId);
+    }
     const status = body.decision === "approve" ? "approved" : "denied";
     const result = await env.DB.prepare(`
       UPDATE location_requests SET status = ?, responded_at_ms = ?
@@ -122,8 +131,9 @@ async function route(request, env, actor, requestId, url) {
       WHERE id = ? AND owner_account_id = ? AND target_device_id = ?
         AND status = 'approved' AND expires_at_ms > ?
     `).bind(locationMatch[1], actor.account_id, actor.device_id, now).first();
-    if (!pending || !await hasConsent(env, actor.account_id, pending.requester_account_id, "request_location", now)) {
-      return fail(403, "consent_required", "اجازه فعال برای ارسال موقعیت وجود ندارد", requestId);
+    if (!pending || !await isConnected(env, actor.account_id, pending.requester_account_id) ||
+        !await hasConsent(env, actor.account_id, pending.requester_account_id, "request_location", now)) {
+      return fail(403, "consent_required", "ارتباط یا اجازه فعال برای ارسال موقعیت وجود ندارد", requestId);
     }
     await env.DB.prepare(`
       INSERT INTO latest_location_fixes (device_id, latitude, longitude, accuracy_m, captured_at_ms, received_at_ms, source)
