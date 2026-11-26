@@ -1,0 +1,2 @@
+# Copy to .dev.vars locally. Never commit real secrets.
+ENVIRONMENT=local
