@@ -54,12 +54,13 @@ class OneShotLocationProvider(
 
         var best: Location? = null
         var completed = false
+        var timeoutRunnable: Runnable? = null
         val listeners = mutableListOf<LocationListener>()
 
         fun finish(result: Result<LocationSnapshot>) {
             if (completed) return
             completed = true
-            handler.removeCallbacks(timeoutRunnable)
+            timeoutRunnable?.let(handler::removeCallbacks)
             listeners.forEach { listener ->
                 runCatching { manager.removeUpdates(listener) }
             }
@@ -79,7 +80,7 @@ class OneShotLocationProvider(
             }
         }
 
-        val timeoutRunnable = Runnable {
+        timeoutRunnable = Runnable {
             val candidate = best
             if (candidate != null) {
                 finish(Result.success(candidate.toSnapshot()))
@@ -109,7 +110,7 @@ class OneShotLocationProvider(
             }
         }
 
-        if (!completed) handler.postDelayed(timeoutRunnable, timeoutMillis)
+        if (!completed) timeoutRunnable?.let { handler.postDelayed(it, timeoutMillis) }
     }
 
     @Suppress("DEPRECATION")
