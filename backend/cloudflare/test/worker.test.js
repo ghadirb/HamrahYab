@@ -36,7 +36,7 @@ test("preflight is answered without exposing permissive CORS", async () => {
 });
 
 test("unsupported methods are rejected", async () => {
-  const response = await worker.fetch(new Request("https://example.test/v1/me", { method: "DELETE" }), { DB: {} });
+  const response = await worker.fetch(new Request("https://example.test/v1/me", { method: "PATCH" }), { DB: {} });
   assert.equal(response.status, 405);
 });
 
