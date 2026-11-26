@@ -166,8 +166,9 @@ async function route(request, env, actor, requestId, url) {
     const code = createInvitationCode();
     const invitationId = crypto.randomUUID();
     const expiresAt = now + 30 * 60 * 1000;
-    await env.DB.prepare("INSERT INTO connection_invitations (id, inviter_account_id, invitee_account_id, code_hash, status, created_at_ms, expires_at_ms) VALUES (?, ?, NULL, ?, 'pending', ?, ?)")
-      .bind(invitationId, actor.account_id, await sha256Hex(code), now, expiresAt).run();
+    const inserted = await env.DB.prepare("INSERT INTO connection_invitations (id, inviter_account_id, invitee_account_id, code_hash, status, created_at_ms, expires_at_ms) SELECT ?, ?, NULL, ?, 'pending', ?, ? WHERE (SELECT COUNT(*) FROM connection_invitations WHERE inviter_account_id = ? AND created_at_ms > ?) < 10")
+      .bind(invitationId, actor.account_id, await sha256Hex(code), now, expiresAt, actor.account_id, now - 24 * 60 * 60 * 1000).run();
+    if (!inserted.meta?.changes) return fail(429, "invitation_limit_reached", "سقف ساخت دعوت روزانه تکمیل شده است", requestId);
     await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'invitation_created', ?, ?)")
       .bind(crypto.randomUUID(), actor.account_id, invitationId, now).run();
     return json({ invitationId, code, expiresAtMs: expiresAt }, 201);
