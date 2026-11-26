@@ -327,7 +327,7 @@ test("invitation creation returns a high-entropy one-time code and stores only i
   assert.ok(insert);
   assert.equal(insert.values[2].length, 64);
   assert.notEqual(insert.values[2], body.code);
-  assert.match(insert.sql, /SELECT COUNT\\(\\*\\) FROM connection_invitations/);
+  assert.ok(insert.sql.includes("SELECT COUNT(*) FROM connection_invitations"));
 });
 
 test("invitation creation enforces a per-account daily issuance cap", async () => {
