@@ -45,6 +45,40 @@ jobs:
           otp_columns = {row[1] for row in db.execute("PRAGMA table_info(otp_challenges)")}
           assert {"phone_e164", "request_ip_hash", "code_hash", "attempts", "expires_at_ms"} <= otp_columns
 
+          # Exercise the OTP consume -> account -> device -> session SQL against SQLite.
+          otp_now = 1_800_000_000_100
+          phone = "+989123456789"
+          db.execute(
+              "INSERT INTO otp_challenges (id, phone_e164, request_ip_hash, code_hash, status, attempts, created_at_ms, expires_at_ms) "
+              "VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)",
+              ("otp-1", phone, "f" * 64, "e" * 64, otp_now, otp_now + 300_000)
+          )
+          assert db.execute(
+              "UPDATE otp_challenges SET status='consumed', verified_at_ms=? "
+              "WHERE id=? AND status='pending' AND expires_at_ms>? AND attempts<5",
+              (otp_now + 1, "otp-1", otp_now + 1)
+          ).rowcount == 1
+          db.execute(
+              "INSERT INTO accounts (id, created_at_ms, status, phone_e164) "
+              "SELECT ?, ?, 'active', ? WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE phone_e164=?)",
+              ("otp-account", otp_now + 1, phone, phone)
+          )
+          db.execute(
+              "INSERT INTO devices (id, account_id, display_name, platform, created_at_ms) "
+              "SELECT ?, id, ?, 'android', ? FROM accounts WHERE phone_e164=? AND status='active'",
+              ("otp-device", "Test phone", otp_now + 1, phone)
+          )
+          db.execute(
+              "INSERT INTO device_sessions (id, device_id, token_hash, created_at_ms, expires_at_ms) "
+              "SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM devices WHERE id=? AND revoked_at_ms IS NULL)",
+              ("otp-session", "otp-device", "d" * 64, otp_now + 1, otp_now + 2_592_000_001, "otp-device")
+          )
+          assert db.execute(
+              "SELECT COUNT(*) FROM device_sessions s JOIN devices d ON d.id=s.device_id "
+              "JOIN accounts a ON a.id=d.account_id WHERE a.phone_e164=?",
+              (phone,)
+          ).fetchone()[0] == 1
+
           # Exercise the exact invitation insert/accept/upsert SQL against SQLite.
           now = 1_800_000_000_000
           db.executemany(
