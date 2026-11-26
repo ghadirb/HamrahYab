@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import ir.maliarpro.hamrahyab.core.location.LocationSnapshot
 import ir.maliarpro.hamrahyab.platform.location.OneShotLocationProvider
+import ir.maliarpro.hamrahyab.ui.AuthAccessCard
 
 private data class FeatureItem(
     val title: String,
@@ -161,6 +162,10 @@ private fun HomeScreen() {
 
         items(features.size) { index ->
             FeatureCard(feature = features[index])
+        }
+
+        item {
+            AuthAccessCard()
         }
 
         item {
