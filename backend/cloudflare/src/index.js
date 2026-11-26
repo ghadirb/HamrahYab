@@ -394,7 +394,7 @@ async function route(request, env, actor, requestId, url) {
       FROM latest_location_fixes l JOIN devices d ON d.id = l.device_id
       WHERE d.account_id = ? AND d.revoked_at_ms IS NULL
         AND EXISTS (SELECT 1 FROM family_connections c WHERE c.id = ? AND c.status = 'active' AND ((c.account_a_id = ? AND c.account_b_id = ?) OR (c.account_b_id = ? AND c.account_a_id = ?)))
-        AND EXISTS (SELECT 1 FROM sharing_consents sc WHERE sc.owner_account_id = ? AND sc.recipient_account_id = ? AND sc.scope = 'view_last_location' AND sc.revoked_at_ms IS NULL AND sc.granted_at_ms <= ? AND (sc.expires_at_ms IS NULL OR sc.expires_at_ms > ?))
+        AND EXISTS (SELECT 1 FROM sharing_consents sc WHERE sc.owner_account_id = ? AND sc.recipient_account_id = ? AND sc.scope = 'view_last_location' AND sc.revoked_at_ms IS NULL AND sc.granted_at_ms <= ? AND (sc.expires_at_ms IS NULL OR sc.expires_at_ms > ?) AND l.captured_at_ms >= sc.granted_at_ms)
       ORDER BY l.captured_at_ms DESC LIMIT 1
     `).bind(ownerId, lastMatch[1], actor.account_id, ownerId, ownerId, actor.account_id, ownerId, actor.account_id, now, now).first();
     if (!fix) return json({ location: null });
