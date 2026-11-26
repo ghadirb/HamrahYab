@@ -30,7 +30,7 @@ jobs:
           expected = {
               "accounts", "devices", "device_sessions", "connection_invitations",
               "family_connections", "sharing_consents", "location_requests",
-              "latest_location_fixes", "audit_events"
+              "latest_location_fixes", "audit_events", "otp_challenges"
           }
           actual = {
               row[0] for row in db.execute(
@@ -40,6 +40,9 @@ jobs:
           missing = expected - actual
           assert not missing, f"Missing tables: {sorted(missing)}"
           assert not list(db.execute("PRAGMA foreign_key_check")), "Foreign key violations"
+          assert "phone_e164" in {row[1] for row in db.execute("PRAGMA table_info(accounts)")}
+          otp_columns = {row[1] for row in db.execute("PRAGMA table_info(otp_challenges)")}
+          assert {"phone_e164", "request_ip_hash", "code_hash", "attempts", "expires_at_ms"} <= otp_columns
 
           # Exercise the exact invitation insert/accept/upsert SQL against SQLite.
           now = 1_800_000_000_000
@@ -134,7 +137,7 @@ jobs:
           """
           listed = db.execute(connection_list_sql, ("account-a",) * 5).fetchall()
           assert len(listed) == 1 and listed[0][3] == "Latest phone", listed
-          print(f"Validated {len(expected)} D1 tables, foreign keys, invitation SQL, reconnection, consent revocation and connection listing.")
+          print(f"Validated {len(expected)} D1 tables, OTP migration, foreign keys, invitation SQL, reconnection, consent revocation and connection listing.")
           PY
 
   backend-worker-tests:
