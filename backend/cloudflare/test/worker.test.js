@@ -69,6 +69,29 @@ function authenticatedDb({ consent = true, pending = 0 } = {}) {
   return { DB, statements };
 }
 
+test("connection list is scoped to the authenticated account and returns active links only", async () => {
+  const { DB } = authenticatedDb();
+  let captured = null;
+  const originalPrepare = DB.prepare.bind(DB);
+  DB.prepare = (sql) => {
+    const statement = originalPrepare(sql);
+    statement.all = async () => {
+      captured = sql;
+      return { results: [{ connectionId: "connection-123456", otherAccountId: "owner-456", connectedAtMs: 1234, deviceName: "گوشی", deviceLastSeenAtMs: 2345 }] };
+    };
+    return statement;
+  };
+  const response = await worker.fetch(new Request("https://example.test/v1/connections", {
+    headers: { authorization: "Bearer " + "x".repeat(40) }
+  }), { DB });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.connections.length, 1);
+  assert.equal(body.connections[0].otherAccountId, "owner-456");
+  assert.ok(captured.includes("c.status = 'active'"));
+  assert.ok(captured.includes("c.account_a_id = ? OR c.account_b_id = ?"));
+  assert.ok(captured.includes("d.revoked_at_ms IS NULL"));
+});
 test("location request creation requires an active explicit consent", async () => {
   const { DB } = authenticatedDb({ consent: false });
   const response = await worker.fetch(
