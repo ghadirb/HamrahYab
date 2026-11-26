@@ -101,6 +101,7 @@ async function handleAuth(request, env, requestId, url) {
       return fail(503, "auth_provider_unavailable", "سرویس ارسال کد ورود هنوز پیکربندی نشده است", requestId);
     }
     const now = nowMs();
+    await env.DB.prepare("DELETE FROM otp_challenges WHERE created_at_ms < ?").bind(now - 30 * 24 * 60 * 60_000).run();
     const ip = request.headers.get("cf-connecting-ip") || "unknown";
     const ipHash = await sha256Hex(ip);
     const limits = await env.DB.prepare(`
