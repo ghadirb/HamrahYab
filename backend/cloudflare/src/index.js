@@ -76,6 +76,153 @@ async function isConnected(env, left, right) {
   `).bind(left, right, right, left).first();
   return row;
 }
+
+function normalizeIranianMobile(value) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/[\\s-]/g, "");
+  const normalized = compact.startsWith("0098") ? "+98" + compact.slice(4)
+    : compact.startsWith("98") ? "+" + compact
+    : compact.startsWith("09") ? "+98" + compact.slice(1)
+    : compact;
+  return /^\\+989[0-9]{9}$/.test(normalized) ? normalized : null;
+}
+function createOtpCode() {
+  const limit = Math.floor(0x100000000 / 1_000_000) * 1_000_000;
+  const value = new Uint32Array(1);
+  do { crypto.getRandomValues(value); } while (value[0] >= limit);
+  return String(value[0] % 1_000_000).padStart(6, "0");
+}
+async function handleAuth(request, env, requestId, url) {
+  if (request.method === "POST" && url.pathname === "/v1/auth/otp/request") {
+    const body = await readJson(request);
+    const phone = normalizeIranianMobile(body?.phone);
+    if (!phone) return fail(400, "invalid_phone", "شماره همراه باید متعلق به قالب معتبر ایران باشد", requestId);
+    if (!env.DB || !env.SMS_GATEWAY || typeof env.SMS_GATEWAY.fetch !== "function") {
+      return fail(503, "auth_provider_unavailable", "سرویس ارسال کد ورود هنوز پیکربندی نشده است", requestId);
+    }
+    const now = nowMs();
+    const ip = request.headers.get("cf-connecting-ip") || "unknown";
+    const ipHash = await sha256Hex(ip);
+    const limits = await env.DB.prepare(`
+      SELECT
+        SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_recent,
+        SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_daily,
+        SUM(CASE WHEN request_ip_hash = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS ip_recent
+      FROM otp_challenges
+      WHERE created_at_ms > ?
+    `).bind(phone, now - 15 * 60_000, phone, now - 24 * 60 * 60_000,
+      ipHash, now - 15 * 60_000, now - 24 * 60 * 60_000).first();
+    if ((limits?.phone_recent || 0) >= 3 || (limits?.phone_daily || 0) >= 10 ||
+        (limits?.ip_recent || 0) >= 20) {
+      return fail(429, "otp_rate_limited", "تعداد درخواست کد ورود بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید", requestId);
+    }
+    const code = createOtpCode();
+    const challengeId = crypto.randomUUID();
+    const expiresAt = now + 5 * 60_000;
+    await env.DB.prepare(`
+      INSERT INTO otp_challenges
+        (id, phone_e164, request_ip_hash, code_hash, status, attempts, created_at_ms, expires_at_ms)
+      VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
+    `).bind(challengeId, phone, ipHash, await sha256Hex(challengeId + ":" + code), now, expiresAt).run();
+    let sent = false;
+    try {
+      const response = await env.SMS_GATEWAY.fetch("https://sms-gateway.internal/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ phone, code, purpose: "hamrahyab_login" })
+      });
+      sent = response.ok;
+    } catch {
+      sent = false;
+    }
+    if (!sent) {
+      await env.DB.prepare("DELETE FROM otp_challenges WHERE id = ? AND status = 'pending'")
+        .bind(challengeId).run();
+      return fail(503, "otp_delivery_failed", "ارسال کد ورود انجام نشد؛ بعداً دوباره تلاش کنید", requestId);
+    }
+    return json({ challengeId, expiresAtMs: expiresAt, retryAfterSeconds: 60 }, 201);
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/auth/otp/verify") {
+    const body = await readJson(request);
+    if (typeof body?.challengeId !== "string" ||
+        !/^[0-9a-f-]{36}$/i.test(body.challengeId) ||
+        typeof body?.code !== "string" || !/^[0-9]{6}$/.test(body.code)) {
+      return fail(400, "invalid_otp_input", "شناسه درخواست یا کد شش‌رقمی معتبر نیست", requestId);
+    }
+    const deviceName = typeof body?.deviceName === "string" ? body.deviceName.trim() : "";
+    if (deviceName.length < 1 || deviceName.length > 80) {
+      return fail(400, "invalid_device_name", "نام دستگاه باید بین ۱ تا ۸۰ نویسه باشد", requestId);
+    }
+    if (!env.DB) return fail(503, "service_unavailable", "پایگاه داده آماده نیست", requestId);
+    const now = nowMs();
+    const codeHash = await sha256Hex(body.challengeId + ":" + body.code);
+    const verified = await env.DB.prepare(`
+      UPDATE otp_challenges SET status = 'consumed', verified_at_ms = ?
+      WHERE id = ? AND code_hash = ? AND status = 'pending'
+        AND expires_at_ms > ? AND attempts < 5
+    `).bind(now, body.challengeId, codeHash, now).run();
+    if (!verified.meta?.changes) {
+      await env.DB.prepare(`
+        UPDATE otp_challenges SET attempts = attempts + 1,
+          status = CASE WHEN attempts + 1 >= 5 THEN 'locked' ELSE status END
+        WHERE id = ? AND status = 'pending' AND expires_at_ms > ? AND attempts < 5
+      `).bind(body.challengeId, now).run();
+      return fail(401, "invalid_or_expired_otp", "کد ورود نادرست، منقضی یا قبلاً استفاده شده است", requestId);
+    }
+    const challenge = await env.DB.prepare(
+      "SELECT phone_e164 FROM otp_challenges WHERE id = ? AND status = 'consumed' AND verified_at_ms = ?"
+    ).bind(body.challengeId, now).first();
+    if (!challenge) return fail(401, "invalid_or_expired_otp", "کد ورود معتبر نیست", requestId);
+
+    const accountId = crypto.randomUUID();
+    const deviceId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    const sessionToken = createInvitationCode();
+    const tokenHash = await sha256Hex(sessionToken);
+    const expiresAt = now + 30 * 24 * 60 * 60_000;
+    const results = await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO accounts (id, created_at_ms, status, phone_e164)
+        SELECT ?, ?, 'active', ? WHERE NOT EXISTS (
+          SELECT 1 FROM accounts WHERE phone_e164 = ?
+        )
+      `).bind(accountId, now, challenge.phone_e164, challenge.phone_e164),
+      env.DB.prepare(`
+        INSERT INTO devices (id, account_id, display_name, platform, created_at_ms)
+        SELECT ?, id, ?, 'android', ? FROM accounts WHERE phone_e164 = ? AND status = 'active'
+      `).bind(deviceId, deviceName, now, challenge.phone_e164),
+      env.DB.prepare(`
+        INSERT INTO device_sessions (id, device_id, token_hash, created_at_ms, expires_at_ms)
+        SELECT ?, ?, ?, ?, ? WHERE EXISTS (
+          SELECT 1 FROM devices WHERE id = ? AND revoked_at_ms IS NULL
+        )
+      `).bind(sessionId, deviceId, tokenHash, now, expiresAt, deviceId),
+      env.DB.prepare(`
+        INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms)
+        SELECT ?, a.id, 'account_authenticated', ?, ? FROM accounts a
+        WHERE a.phone_e164 = ? AND EXISTS (
+          SELECT 1 FROM devices d WHERE d.id = ? AND d.account_id = a.id
+        )
+      `).bind(crypto.randomUUID(), deviceId, now, challenge.phone_e164, deviceId)
+    ]);
+    if (!results?.[1]?.meta?.changes || !results?.[2]?.meta?.changes) {
+      return fail(500, "session_creation_failed", "ایجاد نشست انجام نشد؛ دوباره وارد شوید", requestId);
+    }
+    const account = await env.DB.prepare(
+      "SELECT id FROM accounts WHERE phone_e164 = ? AND status = 'active' LIMIT 1"
+    ).bind(challenge.phone_e164).first();
+    return json({
+      accessToken: sessionToken,
+      tokenType: "Bearer",
+      expiresAtMs: expiresAt,
+      accountId: account.id,
+      deviceId
+    }, 201);
+  }
+  return null;
+}
+
 async function route(request, env, actor, requestId, url) {
   const path = url.pathname;
   const method = request.method;
@@ -452,6 +599,14 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-max-age": "600" } });
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ status: "ok", service: "hamrahyab-api", version: 1 });
+    }
+    if (url.pathname === "/v1/auth/otp/request" || url.pathname === "/v1/auth/otp/verify") {
+      try {
+        const authResponse = await handleAuth(request, env, requestId, url);
+        if (authResponse) return authResponse;
+      } catch (error) {
+        return errorResponse(error, requestId);
+      }
     }
     if (!url.pathname.startsWith("/v1/")) return fail(404, "not_found", "مسیر مورد نظر پیدا نشد", requestId);
     if (!["GET", "POST", "PUT", "DELETE"].includes(request.method)) {
