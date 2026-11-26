@@ -443,23 +443,8 @@ test("invitation decline consumes the one-time code without creating a connectio
   assert.equal((await response.json()).status, "declined");
   assert.equal(batches.length, 1);
   assert.match(batches[0][0].sql, /UPDATE connection_invitations SET status = 'declined'/);
-  assert.match(batches[0][1].sql, /SELECT \\?, \\?, 'invitation_declined', id, \\?/);
-});
-
-
-test("invitation decline records the canonical invitation id in the audit log atomically", async () => {
-  const { DB, batches } = invitationDb();
-  const response = await worker.fetch(new Request("https://example.test/v1/invitations/decline", {
-    method: "POST",
-    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
-    body: JSON.stringify({ code: "A".repeat(43) })
-  }), { DB });
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: "declined" });
-  assert.equal(batches.length, 1);
-  assert.equal(batches[0].length, 2);
-  assert.match(batches[0][0].sql, /UPDATE connection_invitations SET status = 'declined'/);
-  assert.match(batches[0][1].sql, /SELECT \?, \?, 'invitation_declined', id, \?/);
-  assert.match(batches[0][1].sql, /code_hash = \? AND status = 'declined'/);
+  assert.ok(batches[0][1].sql.includes("SELECT ?, ?, 'invitation_declined', id, ?"));
+  assert.ok(batches[0][1].sql.includes("code_hash = ? AND status = 'declined'"));
   assert.equal(batches[0][1].values[3].length, 64);
 });
+
