@@ -103,7 +103,7 @@ async function handleAuth(request, env, requestId, url) {
     const now = nowMs();
     await env.DB.prepare("DELETE FROM otp_challenges WHERE created_at_ms < ?").bind(now - 30 * 24 * 60 * 60_000).run();
     const ip = request.headers.get("cf-connecting-ip") || "unknown";
-    const ipHash = await sha256Hex(ip);
+    const ipHash = await sha256Hex(env.OTP_PEPPER + ":ip:" + ip);
     const limits = await env.DB.prepare(`
       SELECT
         SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_recent,
