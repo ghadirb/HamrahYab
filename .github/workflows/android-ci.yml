@@ -10,6 +10,39 @@ on:
       - main
 
 jobs:
+  backend-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Cloudflare D1 migration
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+          from pathlib import Path
+
+          sql = Path("backend/cloudflare/migrations/0001_initial.sql").read_text()
+          db = sqlite3.connect(":memory:")
+          db.execute("PRAGMA foreign_keys = ON")
+          db.executescript(sql)
+
+          expected = {
+              "accounts", "devices", "device_sessions", "connection_invitations",
+              "family_connections", "sharing_consents", "location_requests",
+              "latest_location_fixes", "audit_events"
+          }
+          actual = {
+              row[0] for row in db.execute(
+                  "SELECT name FROM sqlite_master WHERE type='table'"
+              )
+          }
+          missing = expected - actual
+          assert not missing, f"Missing tables: {sorted(missing)}"
+          assert not list(db.execute("PRAGMA foreign_key_check")), "Foreign key violations"
+          print(f"Validated {len(expected)} D1 tables and foreign keys.")
+          PY
+
   build:
     runs-on: ubuntu-latest
     steps:
