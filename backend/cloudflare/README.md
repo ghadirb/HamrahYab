@@ -19,7 +19,7 @@
 - `DELETE /v1/connections/{connectionId}`: قطع ارتباط توسط هر یک از دو عضو و لغو درخواست‌های باز آن ارتباط.
 - `POST /v1/connections/{connectionId}/location-requests`: ایجاد درخواست برای طرف مقابل، فقط با اتصال فعال و رضایت دقیق `request_location`؛ انقضا پنج دقیقه و سقف پنج درخواست باز.
 - `POST /v1/location-requests/{id}/respond`: تأیید یا رد آشکار درخواست توسط دستگاه هدف.
-- `POST /v1/location-requests/{id}/location`: دریافت موقعیت فقط پس از تأیید درخواست و بررسی رضایت فعال `request_location`.
+- `POST /v1/location-requests/{id}/location`: دریافت موقعیت فقط پس از تأیید درخواست و بررسی رضایت فعال `request_location`؛ زمان ثبت مختصات باید پس از زمان تأیید باشد.
 - `GET /v1/connections/{id}/last-location`: مشاهده آخرین موقعیت فقط با اتصال فعال و رضایت `view_last_location`؛ کنترل اتصال و رضایت در همان دستور خواندن نیز تکرار می‌شود.
 
 تمام مسیرهای `/v1` به Bearer session token معتبر نیاز دارند. Worker فقط SHA-256 توکن را با مقدار ذخیره‌شده مقایسه می‌کند؛ مقدار خام توکن در D1 ذخیره نمی‌شود. actor از نشست سمت سرور استخراج می‌شود و از accountId ارسالی کلاینت استفاده نمی‌شود.
