@@ -27,8 +27,18 @@ class OneShotLocationProvider(
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val handler = Handler(Looper.getMainLooper())
+    private var requestActive = false
+
+    init {
+        require(timeoutMillis > 0L) { "timeoutMillis must be positive" }
+    }
 
     fun request(callback: (Result<LocationSnapshot>) -> Unit) {
+        if (requestActive) {
+            callback(Result.failure(IllegalStateException("درخواست دریافت موقعیت دیگری در حال اجراست.")))
+            return
+        }
+
         val fine = appContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         val coarse = appContext.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
@@ -52,6 +62,7 @@ class OneShotLocationProvider(
             return
         }
 
+        requestActive = true
         var best: Location? = null
         var completed = false
         var timeoutRunnable: Runnable? = null
@@ -60,6 +71,7 @@ class OneShotLocationProvider(
         fun finish(result: Result<LocationSnapshot>) {
             if (completed) return
             completed = true
+            requestActive = false
             timeoutRunnable?.let(handler::removeCallbacks)
             listeners.forEach { listener ->
                 runCatching { manager.removeUpdates(listener) }

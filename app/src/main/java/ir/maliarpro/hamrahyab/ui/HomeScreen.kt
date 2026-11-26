@@ -65,6 +65,7 @@ private fun HomeScreen() {
     val locationProvider = remember(context) { OneShotLocationProvider(context) }
     var lastLocation by remember { mutableStateOf<LocationSnapshot?>(null) }
     var locationStatus by remember { mutableStateOf("برای دریافت موقعیت، دکمه زیر را بزنید.") }
+    var isCapturing by remember { mutableStateOf(false) }
 
     val features = listOf(
         FeatureItem(
@@ -166,18 +167,23 @@ private fun HomeScreen() {
             LocationCaptureCard(
                 lastLocation = lastLocation,
                 status = locationStatus,
+                isCapturing = isCapturing,
                 onCapture = {
-                    locationStatus = "در حال دریافت موقعیت؛ حداکثر تا ۲۰ ثانیه..."
-                    locationProvider.request { result ->
-                        result.fold(
-                            onSuccess = {
-                                lastLocation = it
-                                locationStatus = "موقعیت تازه دریافت شد. این اطلاعات فعلاً فقط روی همین گوشی نمایش داده می‌شود."
-                            },
-                            onFailure = {
-                                locationStatus = it.message ?: "دریافت موقعیت انجام نشد."
-                            }
-                        )
+                    if (!isCapturing) {
+                        isCapturing = true
+                        locationStatus = "در حال دریافت موقعیت؛ حداکثر تا ۲۰ ثانیه..."
+                        locationProvider.request { result ->
+                            isCapturing = false
+                            result.fold(
+                                onSuccess = {
+                                    lastLocation = it
+                                    locationStatus = "موقعیت تازه دریافت شد. این اطلاعات فعلاً فقط روی همین گوشی نمایش داده می‌شود."
+                                },
+                                onFailure = {
+                                    locationStatus = it.message ?: "دریافت موقعیت انجام نشد."
+                                }
+                            )
+                        }
                     }
                 }
             )
