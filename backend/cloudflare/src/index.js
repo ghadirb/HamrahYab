@@ -87,17 +87,20 @@ async function route(request, env, actor, requestId, url) {
       SELECT c.id AS connectionId,
         CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END AS otherAccountId,
         c.created_at_ms AS connectedAtMs,
-        COALESCE(d.display_name, 'دستگاه همراه') AS deviceName,
-        d.last_seen_at_ms AS deviceLastSeenAtMs
+        COALESCE((SELECT d.display_name FROM devices d
+          WHERE d.account_id = CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END
+            AND d.revoked_at_ms IS NULL
+          ORDER BY COALESCE(d.last_seen_at_ms, d.created_at_ms) DESC LIMIT 1),
+          'دستگاه همراه') AS deviceName,
+        (SELECT d.last_seen_at_ms FROM devices d
+          WHERE d.account_id = CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END
+            AND d.revoked_at_ms IS NULL
+          ORDER BY COALESCE(d.last_seen_at_ms, d.created_at_ms) DESC LIMIT 1) AS deviceLastSeenAtMs
       FROM family_connections c
-      LEFT JOIN devices d
-        ON d.account_id = CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END
-        AND d.revoked_at_ms IS NULL
       WHERE c.status = 'active' AND (c.account_a_id = ? OR c.account_b_id = ?)
-      GROUP BY c.id
       ORDER BY c.created_at_ms DESC
       LIMIT 100
-    `).bind(actor.account_id, actor.account_id, actor.account_id, actor.account_id).all();
+    `).bind(actor.account_id, actor.account_id, actor.account_id, actor.account_id, actor.account_id).all();
     return json({ connections: rows.results || [] });
   }
   if (method === "GET" && path === "/v1/location-requests/inbox") {
