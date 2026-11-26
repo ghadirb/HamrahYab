@@ -234,6 +234,7 @@ test("last-location query rechecks active connection and consent in the read sta
   const read = statements.find(sql => sql.includes("SELECT l.latitude"));
   assert.match(read, /family_connections c WHERE c.id = \? AND c.status = 'active'/);
   assert.match(read, /sharing_consents sc WHERE sc.owner_account_id = \?/);
+  assert.ok(read.includes('l.captured_at_ms >= sc.granted_at_ms'));
 });
 
 test("consent grant replaces prior active grant and is tied to an active connection", async () => {
