@@ -274,7 +274,7 @@ async function route(request, env, actor, requestId, url) {
       WHERE id = ? AND owner_account_id = ? AND target_device_id = ?
         AND status = 'approved' AND expires_at_ms > ?
     `).bind(locationMatch[1], actor.account_id, actor.device_id, now).first();
-    if (!pending) return fail(403, "consent_required", "درخواست تأییدشده و معتبری برای ارسال موقعیت وجود ندارد", requestId);
+    if (!pending) return fail(403, "consent_required", "درخواست تأییدشده و معتبری برای ارسال موقعیت وجود ندارد", requestId);\n    if (body.capturedAtMs < pending.responded_at_ms) return fail(409, "location_captured_before_approval", "موقعیت باید پس از تأیید درخواست ثبت شده باشد", requestId);
     if (!await isConnected(env, pending.requester_account_id, actor.account_id)) {
       return fail(403, "connection_revoked", "ارتباط پیش از ارسال موقعیت لغو شده است", requestId);
     }
