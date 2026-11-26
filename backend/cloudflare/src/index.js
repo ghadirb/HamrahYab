@@ -85,6 +85,45 @@ async function route(request, env, actor, requestId, url) {
     `).bind(actor.account_id, actor.device_id, nowMs()).all();
     return json({ requests: rows.results || [] });
   }
+  const createRequestMatch = path.match(/^\/v1\/connections\/([A-Za-z0-9_-]{12,80})\/location-requests$/);
+  if (method === "POST" && createRequestMatch) {
+    const connection = await env.DB.prepare(`
+      SELECT account_a_id, account_b_id FROM family_connections
+      WHERE id = ? AND status = 'active'
+        AND (account_a_id = ? OR account_b_id = ?) LIMIT 1
+    `).bind(createRequestMatch[1], actor.account_id, actor.account_id).first();
+    if (!connection) return fail(404, "connection_not_found", "ارتباط فعال پیدا نشد", requestId);
+    const ownerId = connection.account_a_id === actor.account_id ? connection.account_b_id : connection.account_a_id;
+    const now = nowMs();
+    if (!await hasConsent(env, ownerId, actor.account_id, "request_location", now)) {
+      return fail(403, "consent_required", "صاحب دستگاه اجازه درخواست موقعیت را فعال نکرده است", requestId);
+    }
+    const target = await env.DB.prepare(`
+      SELECT id FROM devices WHERE account_id = ? AND revoked_at_ms IS NULL
+      ORDER BY COALESCE(last_seen_at_ms, created_at_ms) DESC LIMIT 1
+    `).bind(ownerId).first();
+    if (!target) return fail(409, "no_active_device", "برای این حساب دستگاه فعالی ثبت نشده است", requestId);
+    const pendingCount = await env.DB.prepare(`
+      SELECT COUNT(*) AS total FROM location_requests
+      WHERE requester_account_id = ? AND owner_account_id = ?
+        AND status IN ('pending', 'approved') AND expires_at_ms > ?
+    `).bind(actor.account_id, ownerId, now).first();
+    if ((pendingCount?.total || 0) >= 5) {
+      return fail(429, "too_many_pending_requests", "تعداد درخواست‌های باز بیش از حد مجاز است", requestId);
+    }
+    const id = crypto.randomUUID();
+    const expiresAt = now + REQUEST_TTL_MAX_MS;
+    await env.DB.prepare(`
+      INSERT INTO location_requests
+        (id, requester_account_id, owner_account_id, target_device_id, status, created_at_ms, expires_at_ms)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?)
+    `).bind(id, actor.account_id, ownerId, target.id, now, expiresAt).run();
+    await env.DB.prepare(`
+      INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms)
+      VALUES (?, ?, 'location_request_created', ?, ?)
+    `).bind(crypto.randomUUID(), actor.account_id, id, now).run();
+    return json({ requestId: id, status: "pending", expiresAtMs: expiresAt }, 201);
+  }
   const responseMatch = path.match(/^\/v1\/location-requests\/([A-Za-z0-9_-]{12,80})\/respond$/);
   if (method === "POST" && responseMatch) {
     const body = await readJson(request);
