@@ -448,3 +448,84 @@ test("invitation decline consumes the one-time code without creating a connectio
   assert.equal(batches[0][1].values[3].length, 64);
 });
 
+
+
+test("OTP request rejects non-Iranian mobile numbers before calling SMS gateway", async () => {
+  let sent = false;
+  const response = await worker.fetch(new Request("https://example.test/v1/auth/otp/request", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: "12345" })
+  }), {
+    DB: {},
+    OTP_PEPPER: "p".repeat(40),
+    SMS_GATEWAY: { async fetch() { sent = true; return new Response(null, { status: 200 }); } }
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, "invalid_phone");
+  assert.equal(sent, false);
+});
+
+test("OTP request fails closed when the SMS gateway or pepper is not configured", async () => {
+  const response = await worker.fetch(new Request("https://example.test/v1/auth/otp/request", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: "09123456789" })
+  }), { DB: {} });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, "auth_provider_unavailable");
+});
+
+test("OTP request stores only a peppered hash and sends a short-lived code through the gateway binding", async () => {
+  const writes = [];
+  let sentPayload;
+  const DB = {
+    prepare(sql) {
+      return {
+        values: [],
+        bind(...values) { this.values = values; return this; },
+        async first() { return { phone_recent: 0, phone_cooldown: 0, phone_daily: 0, ip_recent: 0 }; },
+        async run() { writes.push({ sql, values: this.values }); return { meta: { changes: 1 } }; }
+      };
+    }
+  };
+  const response = await worker.fetch(new Request("https://example.test/v1/auth/otp/request", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.10" },
+    body: JSON.stringify({ phone: "09123456789" })
+  }), {
+    DB,
+    OTP_PEPPER: "p".repeat(40),
+    SMS_GATEWAY: {
+      async fetch(url, init) {
+        assert.equal(url, "https://sms-gateway.internal/send");
+        sentPayload = JSON.parse(init.body);
+        return new Response(null, { status: 202 });
+      }
+    }
+  });
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.ok(body.challengeId);
+  assert.ok(body.expiresAtMs > Date.now());
+  assert.equal(body.retryAfterSeconds, 60);
+  assert.match(sentPayload.code, /^[0-9]{6}$/);
+  assert.equal(sentPayload.phone, "+989123456789");
+  const insert = writes.find(item => item.sql.includes("INSERT INTO otp_challenges"));
+  assert.ok(insert);
+  assert.equal(insert.values[3].length, 64);
+  assert.notEqual(insert.values[3], sentPayload.code);
+  assert.match(insert.sql, /request_ip_hash = \?/);
+  assert.match(insert.sql, /< 3/);
+  assert.match(insert.sql, /< 20/);
+});
+
+test("OTP verification validates the six-digit code and device name before database access", async () => {
+  const response = await worker.fetch(new Request("https://example.test/v1/auth/otp/verify", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ challengeId: "not-a-uuid", code: "123", deviceName: "" })
+  }), { DB: {}, OTP_PEPPER: "p".repeat(40) });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, "invalid_otp_input");
+});
