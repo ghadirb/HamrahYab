@@ -103,7 +103,38 @@ jobs:
               ("account-a", "account-z")
           ).fetchone()
           assert connection == ("connection-1", "active"), connection
-          print(f"Validated {len(expected)} D1 tables, foreign keys, invitation SQL, reconnection and consent revocation.")
+
+          # Execute the actual connection-list query and ensure it chooses the latest active device.
+          db.executemany(
+              "INSERT INTO devices (id, account_id, display_name, platform, created_at_ms, last_seen_at_ms, revoked_at_ms) "
+              "VALUES (?, 'account-z', ?, 'android', ?, ?, ?)",
+              [
+                  ("device-old", "Old phone", now - 100, now - 50, None),
+                  ("device-latest", "Latest phone", now - 10, now - 1, None),
+                  ("device-revoked", "Revoked phone", now, now, now)
+              ]
+          )
+          connection_list_sql = """
+              SELECT c.id AS connectionId,
+                CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END AS otherAccountId,
+                c.created_at_ms AS connectedAtMs,
+                COALESCE((SELECT d.display_name FROM devices d
+                  WHERE d.account_id = CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END
+                    AND d.revoked_at_ms IS NULL
+                  ORDER BY COALESCE(d.last_seen_at_ms, d.created_at_ms) DESC LIMIT 1),
+                  'دستگاه همراه') AS deviceName,
+                (SELECT d.last_seen_at_ms FROM devices d
+                  WHERE d.account_id = CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END
+                    AND d.revoked_at_ms IS NULL
+                  ORDER BY COALESCE(d.last_seen_at_ms, d.created_at_ms) DESC LIMIT 1) AS deviceLastSeenAtMs
+              FROM family_connections c
+              WHERE c.status = 'active' AND (c.account_a_id = ? OR c.account_b_id = ?)
+              ORDER BY c.created_at_ms DESC
+              LIMIT 100
+          """
+          listed = db.execute(connection_list_sql, ("account-a",) * 5).fetchall()
+          assert len(listed) == 1 and listed[0][3] == "Latest phone", listed
+          print(f"Validated {len(expected)} D1 tables, foreign keys, invitation SQL, reconnection, consent revocation and connection listing.")
           PY
 
   backend-worker-tests:
