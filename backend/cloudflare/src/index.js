@@ -164,7 +164,24 @@ async function route(request, env, actor, requestId, url) {
       UPDATE location_requests SET status = ?, responded_at_ms = ?
       WHERE id = ? AND owner_account_id = ? AND target_device_id = ?
         AND status = 'pending' AND expires_at_ms > ?
-    `).bind(status, now, responseMatch[1], actor.account_id, actor.device_id, now).run();
+        AND (
+          ? = 'denied' OR (
+            EXISTS (
+              SELECT 1 FROM family_connections c
+              WHERE c.status = 'active'
+                AND ((c.account_a_id = location_requests.requester_account_id AND c.account_b_id = location_requests.owner_account_id)
+                  OR (c.account_b_id = location_requests.requester_account_id AND c.account_a_id = location_requests.owner_account_id))
+            )
+            AND EXISTS (
+              SELECT 1 FROM sharing_consents sc
+              WHERE sc.owner_account_id = location_requests.owner_account_id
+                AND sc.recipient_account_id = location_requests.requester_account_id
+                AND sc.scope = 'request_location' AND sc.revoked_at_ms IS NULL
+                AND sc.granted_at_ms <= ? AND (sc.expires_at_ms IS NULL OR sc.expires_at_ms > ?)
+            )
+          )
+        )
+    `).bind(status, now, responseMatch[1], actor.account_id, actor.device_id, now, status, now, now).run();
     if (!result.meta?.changes) return fail(409, "request_unavailable", "درخواست منقضی یا قبلاً پاسخ داده شده است", requestId);
     await env.DB.prepare(`
       INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms)
@@ -196,15 +213,39 @@ async function route(request, env, actor, requestId, url) {
     if (!await hasConsent(env, actor.account_id, pending.requester_account_id, "request_location", now)) {
       return fail(403, "consent_required", "اجازه فعال برای ارسال موقعیت وجود ندارد", requestId);
     }
-    await env.DB.prepare(`
+    const stored = await env.DB.prepare(`
       INSERT INTO latest_location_fixes (device_id, latitude, longitude, accuracy_m, captured_at_ms, received_at_ms, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      SELECT ?, ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (
+        SELECT 1 FROM family_connections c
+        WHERE c.status = 'active'
+          AND ((c.account_a_id = ? AND c.account_b_id = ?) OR (c.account_b_id = ? AND c.account_a_id = ?))
+      )
+      AND EXISTS (
+        SELECT 1 FROM sharing_consents sc
+        WHERE sc.owner_account_id = ? AND sc.recipient_account_id = ?
+          AND sc.scope = 'request_location' AND sc.revoked_at_ms IS NULL
+          AND sc.granted_at_ms <= ? AND (sc.expires_at_ms IS NULL OR sc.expires_at_ms > ?)
+      )
+      AND EXISTS (
+        SELECT 1 FROM location_requests lr
+        WHERE lr.id = ? AND lr.owner_account_id = ? AND lr.requester_account_id = ?
+          AND lr.target_device_id = ? AND lr.status = 'approved' AND lr.expires_at_ms > ?
+      )
       ON CONFLICT(device_id) DO UPDATE SET
         latitude = excluded.latitude, longitude = excluded.longitude,
         accuracy_m = excluded.accuracy_m, captured_at_ms = excluded.captured_at_ms,
         received_at_ms = excluded.received_at_ms, source = excluded.source
       WHERE excluded.captured_at_ms >= latest_location_fixes.captured_at_ms
-    `).bind(actor.device_id, body.latitude, body.longitude, body.accuracyMeters, body.capturedAtMs, now, body.source).run();
+    `).bind(
+      actor.device_id, body.latitude, body.longitude, body.accuracyMeters, body.capturedAtMs, now, body.source,
+      pending.requester_account_id, actor.account_id, actor.account_id, pending.requester_account_id,
+      actor.account_id, pending.requester_account_id, now, now,
+      locationMatch[1], actor.account_id, pending.requester_account_id, actor.device_id, now
+    ).run();
+    if (!stored.meta?.changes) {
+      return fail(403, "authorization_changed", "اجازه یا ارتباط پیش از ثبت موقعیت تغییر کرده است", requestId);
+    }
     await env.DB.prepare("UPDATE location_requests SET status = 'fulfilled', fulfilled_at_ms = ? WHERE id = ? AND status = 'approved'")
       .bind(now, locationMatch[1]).run();
     await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'location_uploaded', ?, ?)")
