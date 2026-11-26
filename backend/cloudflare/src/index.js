@@ -200,11 +200,16 @@ async function route(request, env, actor, requestId, url) {
       return fail(400, "invalid_invitation_code", "کد دعوت معتبر نیست", requestId);
     }
     const now = nowMs();
-    const result = await env.DB.prepare("UPDATE connection_invitations SET status = 'declined', invitee_account_id = ?, responded_at_ms = ? WHERE code_hash = ? AND status = 'pending' AND expires_at_ms > ? AND inviter_account_id <> ? AND (invitee_account_id IS NULL OR invitee_account_id = ?)")
-      .bind(actor.account_id, now, await sha256Hex(body.code), now, actor.account_id, actor.account_id).run();
-    if (!result.meta?.changes) return fail(404, "invitation_not_found", "دعوت معتبر یا فعالی پیدا نشد", requestId);
-    await env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) VALUES (?, ?, 'invitation_declined', ?, ?)")
-      .bind(crypto.randomUUID(), actor.account_id, "invitation:" + (await sha256Hex(body.code)).slice(0, 16), now).run();
+    const codeHash = await sha256Hex(body.code);
+    const results = await env.DB.batch([
+      env.DB.prepare("UPDATE connection_invitations SET status = 'declined', invitee_account_id = ?, responded_at_ms = ? WHERE code_hash = ? AND status = 'pending' AND expires_at_ms > ? AND inviter_account_id <> ? AND (invitee_account_id IS NULL OR invitee_account_id = ?)")
+        .bind(actor.account_id, now, codeHash, now, actor.account_id, actor.account_id),
+      env.DB.prepare("INSERT INTO audit_events (id, actor_account_id, event_type, subject_id, created_at_ms) SELECT ?, ?, 'invitation_declined', id, ? FROM connection_invitations WHERE code_hash = ? AND status = 'declined' AND invitee_account_id = ? AND responded_at_ms = ?")
+        .bind(crypto.randomUUID(), actor.account_id, now, codeHash, actor.account_id, now)
+    ]);
+    if (!results?.[0]?.meta?.changes || !results?.[1]?.meta?.changes) {
+      return fail(404, "invitation_not_found", "دعوت معتبر یا فعالی پیدا نشد", requestId);
+    }
     return json({ status: "declined" });
   }
   if (method === "POST" && path === "/v1/invitations/accept") {
