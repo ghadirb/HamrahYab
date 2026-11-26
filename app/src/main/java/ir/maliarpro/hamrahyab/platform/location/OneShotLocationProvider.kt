@@ -40,6 +40,7 @@ class OneShotLocationProvider(context: Context, private val timeoutMillis: Long 
    if (location.accuracy > 0f && location.accuracy <= 100f) finish(Result.success(location.toSnapshot()))
   }
   providers.forEach { provider ->
+   if (completed) return@forEach
    val listener = object : LocationListener {
     override fun onLocationChanged(location: Location) = consider(location)
     @Deprecated("Deprecated by Android") override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
@@ -52,7 +53,7 @@ class OneShotLocationProvider(context: Context, private val timeoutMillis: Long 
     manager.getLastKnownLocation(provider)?.let(::consider)
    } catch (e: SecurityException) { finish(Result.failure(e)); return }
   }
-  handler.postDelayed({
+  if (!completed) handler.postDelayed({
    val candidate = best
    if (candidate != null) finish(Result.success(candidate.toSnapshot()))
    else finish(Result.failure(IllegalStateException("در مهلت تعیین‌شده موقعیتی دریافت نشد.")))
