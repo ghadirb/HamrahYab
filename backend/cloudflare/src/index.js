@@ -169,7 +169,7 @@ async function route(request, env, actor, requestId, url) {
   const consentGrantMatch = path.match(/^\/v1\/connections\/([A-Za-z0-9_-]{12,80})\/consents$/);
   if (method === "PUT" && consentGrantMatch) {
     const body = await readJson(request);
-    const scopes = ["request_location", "view_last_location", "live_sharing", "emergency_location", "manage_geofences", "receive_sos"];
+    const scopes = ["request_location", "view_last_location"];
     if (!scopes.includes(body?.scope)) return fail(400, "invalid_scope", "دامنه رضایت معتبر نیست", requestId);
     const now = nowMs();
     const expiresAt = body.expiresAtMs === undefined || body.expiresAtMs === null ? null : body.expiresAtMs;
