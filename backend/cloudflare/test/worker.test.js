@@ -395,3 +395,16 @@ test("invitation acceptance reactivates a revoked canonical connection", async (
   assert.match(batches[0][1].sql, /DO UPDATE SET status = 'active'/);
   assert.match(batches[0][1].sql, /revoked_at_ms = NULL/);
 });
+
+test("location upload atomically rechecks target device and approval timestamp", async () => {
+  const { DB, writes } = responseDb({ connected: true, consent: true });
+  const response = await worker.fetch(new Request("https://example.test/v1/location-requests/request-123456/location", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ latitude: 35.7, longitude: 51.4, accuracyMeters: 12, capturedAtMs: Date.now(), source: "gps" })
+  }), { DB });
+  assert.equal(response.status, 201);
+  const insert = writes.find(sql => sql.includes("INSERT INTO latest_location_fixes")) || "";
+  assert.ok(insert.includes("AND ? >= lr.responded_at_ms"));
+  assert.ok(insert.includes("FROM devices d WHERE d.id = ? AND d.account_id = ? AND d.revoked_at_ms IS NULL"));
+});
