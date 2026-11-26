@@ -14,6 +14,7 @@
 - `GET /health`: بررسی سلامت عمومی، بدون اتصال به D1.
 - `GET /v1/me`: اطلاعات حساب و دستگاه از نشست احراز هویت‌شده.
 - `GET /v1/location-requests/inbox`: درخواست‌های منتظر پاسخ برای همان دستگاه.
+- `POST /v1/connections/{connectionId}/location-requests`: ایجاد درخواست برای طرف مقابل، فقط با اتصال فعال و رضایت دقیق `request_location`؛ انقضا پنج دقیقه و سقف پنج درخواست باز.
 - `POST /v1/location-requests/{id}/respond`: تأیید یا رد آشکار درخواست توسط دستگاه هدف.
 - `POST /v1/location-requests/{id}/location`: دریافت موقعیت فقط پس از تأیید درخواست و بررسی رضایت فعال `request_location`.
 - `GET /v1/connections/{id}/last-location`: مشاهده آخرین موقعیت فقط با اتصال فعال و رضایت `view_last_location`.
