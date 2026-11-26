@@ -433,7 +433,7 @@ test("location upload atomically rechecks target device and approval timestamp",
 });
 
 test("invitation decline consumes the one-time code without creating a connection", async () => {
-  const { DB, statements, batches } = invitationDb();
+  const { DB, batches } = invitationDb();
   const response = await worker.fetch(new Request("https://example.test/v1/invitations/decline", {
     method: "POST",
     headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
@@ -441,9 +441,9 @@ test("invitation decline consumes the one-time code without creating a connectio
   }), { DB });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).status, "declined");
-  const update = statements.find(item => item.sql.includes("UPDATE connection_invitations SET status = 'declined'"));
-  assert.ok(update);
-  assert.equal(batches.length, 0);
+  assert.equal(batches.length, 1);
+  assert.match(batches[0][0].sql, /UPDATE connection_invitations SET status = 'declined'/);
+  assert.match(batches[0][1].sql, /SELECT \\?, \\?, 'invitation_declined', id, \\?/);
 });
 
 
