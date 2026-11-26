@@ -14,7 +14,7 @@
 - `GET /health`: بررسی سلامت عمومی، بدون اتصال به D1.
 - `GET /v1/me`: اطلاعات حساب و دستگاه از نشست احراز هویت‌شده.
 - `GET /v1/location-requests/inbox`: درخواست‌های منتظر پاسخ برای همان دستگاه.
-- `PUT /v1/connections/{connectionId}/consents`: اعطای دامنه رضایت توسط صاحب داده، با انقضای اختیاری حداکثر یک‌ساله.
+- `PUT /v1/connections/{connectionId}/consents`: اعطای رضایت `request_location` یا `view_last_location` توسط صاحب داده، با انقضای اختیاری حداکثر یک‌ساله.
 - `DELETE /v1/consents/{consentId}`: لغو رضایت توسط صاحب داده؛ درخواست‌های باز وابسته به `request_location` نیز لغو می‌شوند.
 - `DELETE /v1/connections/{connectionId}`: قطع ارتباط توسط هر یک از دو عضو و لغو درخواست‌های باز آن ارتباط.
 - `POST /v1/connections/{connectionId}/location-requests`: ایجاد درخواست برای طرف مقابل، فقط با اتصال فعال و رضایت دقیق `request_location`؛ انقضا پنج دقیقه و سقف پنج درخواست باز.
