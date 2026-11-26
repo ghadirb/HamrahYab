@@ -79,12 +79,12 @@ async function isConnected(env, left, right) {
 
 function normalizeIranianMobile(value) {
   if (typeof value !== "string") return null;
-  const compact = value.replace(/[\\s-]/g, "");
+  const compact = value.replace(/[\s-]/g, "");
   const normalized = compact.startsWith("0098") ? "+98" + compact.slice(4)
     : compact.startsWith("98") ? "+" + compact
     : compact.startsWith("09") ? "+98" + compact.slice(1)
     : compact;
-  return /^\\+989[0-9]{9}$/.test(normalized) ? normalized : null;
+  return /^\+989[0-9]{9}$/.test(normalized) ? normalized : null;
 }
 function createOtpCode() {
   const limit = Math.floor(0x100000000 / 1_000_000) * 1_000_000;
@@ -97,7 +97,7 @@ async function handleAuth(request, env, requestId, url) {
     const body = await readJson(request);
     const phone = normalizeIranianMobile(body?.phone);
     if (!phone) return fail(400, "invalid_phone", "شماره همراه باید متعلق به قالب معتبر ایران باشد", requestId);
-    if (!env.DB || !env.SMS_GATEWAY || typeof env.SMS_GATEWAY.fetch !== "function") {
+    if (!env.DB || !env.SMS_GATEWAY || typeof env.SMS_GATEWAY.fetch !== "function" || typeof env.OTP_PEPPER !== "string" || env.OTP_PEPPER.length < 32) {
       return fail(503, "auth_provider_unavailable", "سرویس ارسال کد ورود هنوز پیکربندی نشده است", requestId);
     }
     const now = nowMs();
@@ -105,14 +105,14 @@ async function handleAuth(request, env, requestId, url) {
     const ipHash = await sha256Hex(ip);
     const limits = await env.DB.prepare(`
       SELECT
-        SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_recent,
+        SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_recent,\n        SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_cooldown,
         SUM(CASE WHEN phone_e164 = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS phone_daily,
         SUM(CASE WHEN request_ip_hash = ? AND created_at_ms > ? THEN 1 ELSE 0 END) AS ip_recent
       FROM otp_challenges
       WHERE created_at_ms > ?
     `).bind(phone, now - 15 * 60_000, phone, now - 24 * 60 * 60_000,
       ipHash, now - 15 * 60_000, now - 24 * 60 * 60_000).first();
-    if ((limits?.phone_recent || 0) >= 3 || (limits?.phone_daily || 0) >= 10 ||
+    if ((limits?.phone_recent || 0) >= 3 || (limits?.phone_cooldown || 0) >= 1 || (limits?.phone_daily || 0) >= 10 ||
         (limits?.ip_recent || 0) >= 20) {
       return fail(429, "otp_rate_limited", "تعداد درخواست کد ورود بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید", requestId);
     }
@@ -123,7 +123,7 @@ async function handleAuth(request, env, requestId, url) {
       INSERT INTO otp_challenges
         (id, phone_e164, request_ip_hash, code_hash, status, attempts, created_at_ms, expires_at_ms)
       VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
-    `).bind(challengeId, phone, ipHash, await sha256Hex(challengeId + ":" + code), now, expiresAt).run();
+    `).bind(challengeId, phone, ipHash, await sha256Hex(env.OTP_PEPPER + ":" + challengeId + ":" + code), now, expiresAt).run();
     let sent = false;
     try {
       const response = await env.SMS_GATEWAY.fetch("https://sms-gateway.internal/send", {
@@ -156,7 +156,7 @@ async function handleAuth(request, env, requestId, url) {
     }
     if (!env.DB) return fail(503, "service_unavailable", "پایگاه داده آماده نیست", requestId);
     const now = nowMs();
-    const codeHash = await sha256Hex(body.challengeId + ":" + body.code);
+    const codeHash = await sha256Hex(env.OTP_PEPPER + ":" + body.challengeId + ":" + body.code);
     const verified = await env.DB.prepare(`
       UPDATE otp_challenges SET status = 'consumed', verified_at_ms = ?
       WHERE id = ? AND code_hash = ? AND status = 'pending'
