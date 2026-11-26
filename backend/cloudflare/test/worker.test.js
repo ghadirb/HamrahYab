@@ -529,3 +529,58 @@ test("OTP verification validates the six-digit code and device name before datab
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, "invalid_otp_input");
 });
+
+
+test("valid OTP is consumed once and issues a hashed thirty-day device session", async () => {
+  const batches = [];
+  const statements = [];
+  const DB = {
+    prepare(sql) {
+      const statement = {
+        sql,
+        values: [],
+        bind(...values) { this.values = values; return this; },
+        async run() {
+          statements.push({ sql, values: this.values });
+          return { meta: { changes: 1 } };
+        },
+        async first() {
+          if (sql.includes("SELECT phone_e164 FROM otp_challenges")) {
+            return { phone_e164: "+989123456789" };
+          }
+          if (sql.includes("SELECT id FROM accounts WHERE phone_e164")) {
+            return { id: "account-existing" };
+          }
+          return null;
+        }
+      };
+      return statement;
+    },
+    async batch(items) {
+      batches.push(items.map(item => ({ sql: item.sql, values: item.values })));
+      return items.map(() => ({ meta: { changes: 1 } }));
+    }
+  };
+  const response = await worker.fetch(new Request("https://example.test/v1/auth/otp/verify", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      challengeId: "123e4567-e89b-42d3-a456-426614174000",
+      code: "123456",
+      deviceName: "گوشی من"
+    })
+  }), { DB, OTP_PEPPER: "p".repeat(40) });
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.match(body.accessToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(body.tokenType, "Bearer");
+  assert.equal(body.accountId, "account-existing");
+  assert.ok(body.deviceId);
+  assert.ok(body.expiresAtMs > Date.now() + 29 * 24 * 60 * 60_000);
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].length, 4);
+  assert.match(batches[0][0].sql, /WHERE NOT EXISTS/);
+  assert.match(batches[0][2].sql, /INSERT INTO device_sessions/);
+  assert.equal(batches[0][2].values[2].length, 64);
+  assert.notEqual(batches[0][2].values[2], body.accessToken);
+});
