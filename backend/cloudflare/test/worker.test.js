@@ -156,3 +156,76 @@ test("approval is rejected after location consent is revoked", async () => {
   assert.equal((await response.json()).error.code, "consent_required");
   assert.equal(writes.some((sql) => sql.includes("UPDATE location_requests SET status")), false);
 });
+
+function revocationDb({ consentScope = "request_location" } = {}) {
+  const batches = [];
+  const statements = [];
+  const DB = {
+    prepare(sql) {
+      const statement = {
+        sql, values: [],
+        bind(...values) { this.values = values; return this; },
+        async first() {
+          if (sql.includes("SELECT s.id AS session_id")) return { session_id: "s1", device_id: "d1", account_id: "owner-456" };
+          if (sql.includes("SELECT account_a_id, account_b_id")) return { account_a_id: "requester-123", account_b_id: "owner-456" };
+          if (sql.includes("SELECT recipient_account_id, scope FROM sharing_consents")) return { recipient_account_id: "requester-123", scope: consentScope };
+          return null;
+        },
+        async run() { statements.push({ sql, values: this.values }); return { meta: { changes: 1 } }; }
+      };
+      return statement;
+    },
+    async batch(items) {
+      batches.push(items.map(item => ({ sql: item.sql, values: item.values })));
+      return items.map(() => ({ meta: { changes: 1 } }));
+    }
+  };
+  return { DB, batches, statements };
+}
+
+test("connection revocation cancels pending and approved location requests atomically", async () => {
+  const { DB, batches } = revocationDb();
+  const response = await worker.fetch(new Request("https://example.test/v1/connections/connection-123456", {
+    method: "DELETE", headers: { authorization: "Bearer " + "x".repeat(40) }
+  }), { DB });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "revoked");
+  assert.equal(batches.length, 1);
+  assert.match(batches[0][0].sql, /UPDATE family_connections SET status = 'revoked'/);
+  assert.match(batches[0][1].sql, /UPDATE location_requests SET status = 'cancelled'/);
+});
+
+test("consent revocation cancels open location requests in the same D1 batch", async () => {
+  const { DB, batches } = revocationDb({ consentScope: "request_location" });
+  const response = await worker.fetch(new Request("https://example.test/v1/consents/consent-123456", {
+    method: "DELETE", headers: { authorization: "Bearer " + "x".repeat(40) }
+  }), { DB });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "revoked");
+  assert.equal(batches.length, 1);
+  assert.match(batches[0][0].sql, /UPDATE sharing_consents SET revoked_at_ms/);
+  assert.match(batches[0][1].sql, /UPDATE location_requests SET status = 'cancelled'/);
+});
+
+test("last-location query rechecks active connection and consent in the read statement", async () => {
+  const { DB } = authenticatedDb({ consent: true });
+  const statements = [];
+  const originalPrepare = DB.prepare.bind(DB);
+  DB.prepare = (sql) => {
+    const statement = originalPrepare(sql);
+    const originalFirst = statement.first.bind(statement);
+    statement.first = async () => {
+      statements.push(sql);
+      if (sql.includes("SELECT l.latitude")) return null;
+      return originalFirst();
+    };
+    return statement;
+  };
+  const response = await worker.fetch(new Request("https://example.test/v1/connections/connection-123456/last-location", {
+    method: "GET", headers: { authorization: "Bearer " + "x".repeat(40) }
+  }), { DB });
+  assert.equal(response.status, 200);
+  const read = statements.find(sql => sql.includes("SELECT l.latitude"));
+  assert.match(read, /family_connections c WHERE c.id = \? AND c.status = 'active'/);
+  assert.match(read, /sharing_consents sc WHERE sc.owner_account_id = \?/);
+});
