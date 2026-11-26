@@ -270,7 +270,7 @@ async function route(request, env, actor, requestId, url) {
       return fail(400, "invalid_location", "اطلاعات موقعیت معتبر یا به‌روز نیست", requestId);
     }
     const pending = await env.DB.prepare(`
-      SELECT requester_account_id, owner_account_id FROM location_requests
+      SELECT requester_account_id, owner_account_id, responded_at_ms FROM location_requests
       WHERE id = ? AND owner_account_id = ? AND target_device_id = ?
         AND status = 'approved' AND expires_at_ms > ?
     `).bind(locationMatch[1], actor.account_id, actor.device_id, now).first();
