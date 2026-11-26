@@ -116,7 +116,7 @@ function responseDb({ connected = true, consent = true } = {}) {
             return { session_id: "session-123", device_id: "device-target-123", account_id: "owner-456" };
           }
           if (sql.includes("SELECT requester_account_id FROM location_requests") || sql.includes("SELECT requester_account_id, owner_account_id FROM location_requests")) {
-            return { requester_account_id: "requester-123" };
+            return { requester_account_id: "requester-123", owner_account_id: "owner-456", responded_at_ms: Date.now() - 5_000 };
           }
           if (sql.includes("SELECT id FROM family_connections")) return connected ? { id: "connection-1" } : null;
           if (sql.includes("SELECT id FROM sharing_consents")) return consent ? { id: "consent-1" } : null;
@@ -269,5 +269,17 @@ test("location upload is rejected after consent revocation", async () => {
   }), { DB });
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, "consent_required");
+  assert.equal(writes.some(sql => sql.includes("INSERT INTO latest_location_fixes")), false);
+});
+
+test("location captured before request approval is rejected", async () => {
+  const { DB, writes } = responseDb({ connected: true, consent: true });
+  const response = await worker.fetch(new Request("https://example.test/v1/location-requests/request-123456/location", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ latitude: 35.7, longitude: 51.4, accuracyMeters: 12, capturedAtMs: Date.now() - 10_000, source: "gps" })
+  }), { DB });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, "location_captured_before_approval");
   assert.equal(writes.some(sql => sql.includes("INSERT INTO latest_location_fixes")), false);
 });
