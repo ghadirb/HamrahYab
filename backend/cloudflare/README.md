@@ -1,50 +1,67 @@
-# Cloudflare backend foundation
+# همراه‌یاب — Cloudflare Worker و D1
 
-This directory defines the first deployable backend boundary for HamrahYab. It intentionally does **not** contain production credentials, a hard-coded API key, or a live deployment.
+این بخش، پیاده‌سازی اولیه API سمت سرور است؛ هنوز هیچ Worker یا D1 در حساب Cloudflare ساخته یا مستقر نشده است. هیچ secret یا توکن Cloudflare نباید در Git یا APK قرار بگیرد.
 
-## Target architecture
+## اجزای فعلی
 
-- Cloudflare Worker: HTTPS API edge and request validation.
-- Cloudflare D1: relational metadata store (SQLite-compatible).
-- Cloudflare Queues or a provider adapter: asynchronous notification delivery, added only after a provider is selected and tested.
-- Optional Durable Objects: only if later measurements show a need for realtime coordination; not required for the MVP.
+- `src/index.js`: Worker مبتنی بر Fetch API و D1.
+- `migrations/0001_initial.sql`: ساختار اولیه داده.
+- `test/worker.test.js`: آزمون‌های مرز عمومی/خصوصی API.
+- `wrangler.toml`: الگوی تنظیمات؛ شناسه پایگاه داده باید پیش از استقرار جایگزین شود.
 
-The Android application must communicate only with the documented API contract. It must never contain a Cloudflare API token, D1 credential, service-role secret, or provider secret.
+## مسیرهای پیاده‌سازی‌شده
 
-## Initial setup (when ready to deploy)
+- `GET /health`: بررسی سلامت عمومی، بدون اتصال به D1.
+- `GET /v1/me`: اطلاعات حساب و دستگاه از نشست احراز هویت‌شده.
+- `GET /v1/location-requests/inbox`: درخواست‌های منتظر پاسخ برای همان دستگاه.
+- `POST /v1/location-requests/{id}/respond`: تأیید یا رد آشکار درخواست توسط دستگاه هدف.
+- `POST /v1/location-requests/{id}/location`: دریافت موقعیت فقط پس از تأیید درخواست و بررسی رضایت فعال `request_location`.
+- `GET /v1/connections/{id}/last-location`: مشاهده آخرین موقعیت فقط با اتصال فعال و رضایت `view_last_location`.
 
-1. Create a Cloudflare account and a dedicated Worker for HamrahYab.
-2. Create a D1 database in the intended region.
-3. Bind the database as `DB` in the Worker environment.
-4. Apply migrations in order using Wrangler.
-5. Configure a production API hostname and restrict CORS to the actual Android/web origins (native Android requests do not need permissive wildcard CORS).
-6. Add secrets through `wrangler secret put` or the Cloudflare dashboard. Never commit secrets to Git.
-7. Deploy to a staging environment first; run API, authorization, rate-limit, and retention tests before production.
+تمام مسیرهای `/v1` به Bearer session token معتبر نیاز دارند. Worker فقط SHA-256 توکن را با مقدار ذخیره‌شده مقایسه می‌کند؛ مقدار خام توکن در D1 ذخیره نمی‌شود. actor از نشست سمت سرور استخراج می‌شود و از accountId ارسالی کلاینت استفاده نمی‌شود.
 
-Example commands (database and Worker names are placeholders):
+## محدودیت‌های عمدی این مرحله
+
+- صدور نشست و ورود OTP هنوز پیاده‌سازی نشده؛ نشست باید توسط جریان احراز هویت معتبر ایجاد شود. هیچ مسیر توسعه‌ای برای دور زدن احراز هویت وجود ندارد.
+- ایجاد/پذیرش دعوت، مدیریت رضایت، لغو نشست و ثبت دستگاه هنوز endpoint عملیاتی ندارند.
+- اتصال به Push/SMS، rate limiting توزیع‌شده و سیاست حذف حساب هنوز باید تکمیل و آزمایش شوند.
+- بنابراین این نسخه برای داده واقعی کاربران یا انتشار عمومی آماده نیست.
+
+## اجرای آزمون‌ها
+
+از همین پوشه:
+
+```bash
+npm test
+```
+
+CI همین آزمون‌ها را با Node.js 22 اجرا می‌کند و جداگانه migration را با SQLite بررسی می‌کند.
+
+## استقرار آزمایشی (بعد از آماده‌شدن حساب)
+
+1. یک D1 جداگانه برای staging بساز.
+2. شناسه واقعی D1 را در تنظیمات Wrangler قرار بده؛ مقدار placeholder را نگه ندار.
+3. migration را روی staging اعمال کن.
+4. Worker را فقط روی محیط staging منتشر کن.
+5. قبل از هر داده واقعی، آزمون‌های احراز هویت، رضایت، لغو دسترسی، نرخ درخواست و حذف داده را اجرا کن.
+
+نمونه فرمان‌ها:
 
 ```bash
 npx wrangler d1 create hamrahyab-staging
-npx wrangler d1 migrations apply hamrahyab-staging --remote
+npx wrangler d1 migrations apply hamrahyab-staging --remote --env staging
 npx wrangler deploy --env staging
 ```
 
-## Security requirements before any real user data
+## الزامات امنیتی
 
-- Account authentication must be provided by a verified identity flow; do not treat a device ID or pairing code as authentication.
-- Store only hashes of bearer/refresh tokens and pairing codes.
-- Use short-lived, single-use pairing codes; enforce attempt limits and expiry on the server.
-- Authorize every operation against account ownership, active connection, scope-specific consent, and request expiry.
-- Make revocation effective immediately at the API authorization layer.
-- Do not accept client-supplied account ownership as proof of identity.
-- Apply per-account, per-device, and per-IP rate limits.
-- Validate coordinates, accuracy, timestamps, and payload sizes; reject implausible/future timestamps.
-- Never return a location to a requester unless the owner has an active matching consent.
-- Use TLS; avoid logging coordinates, tokens, pairing codes, phone numbers, or other sensitive payloads.
-- Define and enforce location retention and deletion before storing production location data.
-- Push messages contain opaque event IDs only, never coordinates or other location data.
-- A push notification is a wake-up hint, not authorization. The receiving app must fetch the request over authenticated HTTPS and show the user an explicit action.
+- هر عملیات داده‌ای باید نشست معتبر، مالکیت، اتصال فعال و رضایت دقیق را بررسی کند.
+- لغو رضایت باید فوراً روی درخواست‌های بعدی اثر کند.
+- کد دعوت/OTP باید کوتاه‌عمر، یک‌بارمصرف و rate-limited باشد و فقط hash آن ذخیره شود.
+- مختصات، توکن، OTP و متن خام درخواست نباید وارد log شوند.
+- Push فقط شناسه opaque رویداد را حمل می‌کند؛ اعلان جایگزین مجوز نیست.
+- تاریخچه مسیر در MVP ذخیره نمی‌شود؛ فقط آخرین موقعیت مجاز نگهداری می‌شود.
+- محدودیت اندازه payload و اعتبارسنجی مختصات/زمان در Worker اعمال می‌شود.
+- قبل از انتشار عمومی باید rate limiting واقعی، سیاست retention/deletion و آزمون نفوذ تکمیل شوند.
 
-## Current status
-
-This is a foundation and migration only. No Cloudflare resource has been created, no Worker is deployed, and no remote location sharing is operational yet. Provider selection (including Iranian SMS and push delivery) remains a validation task.
+**وضعیت:** پیاده‌سازی API پایه و آزمون‌های اولیه در شاخه توسعه؛ بدون استقرار Cloudflare و بدون ارتباط عملیاتی بین گوشی‌ها.
