@@ -1,7 +1,5 @@
 package ir.maliarpro.hamrahyab.ui
 
-import android.content.Context
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
