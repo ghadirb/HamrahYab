@@ -39,3 +39,63 @@ test("unsupported methods are rejected", async () => {
   const response = await worker.fetch(new Request("https://example.test/v1/me", { method: "DELETE" }), { DB: {} });
   assert.equal(response.status, 405);
 });
+
+function authenticatedDb({ consent = true, pending = 0 } = {}) {
+  const statements = [];
+  const DB = {
+    prepare(sql) {
+      const statement = {
+        sql,
+        values: [],
+        bind(...values) { this.values = values; return this; },
+        async first() {
+          if (sql.includes("SELECT s.id AS session_id")) {
+            return { session_id: "session-123", device_id: "device-target-123", account_id: "requester-123" };
+          }
+          if (sql.includes("SELECT account_a_id, account_b_id")) {
+            return { account_a_id: "requester-123", account_b_id: "owner-456" };
+          }
+          if (sql.includes("SELECT id FROM sharing_consents")) return consent ? { id: "consent-1" } : null;
+          if (sql.includes("SELECT id FROM devices")) return { id: "device-owner-456" };
+          if (sql.includes("SELECT COUNT(*) AS total")) return { total: pending };
+          return null;
+        },
+        async run() { statements.push({ sql, values: this.values }); return { meta: { changes: 1 } }; },
+        async all() { return { results: [] }; }
+      };
+      return statement;
+    }
+  };
+  return { DB, statements };
+}
+
+test("location request creation requires an active explicit consent", async () => {
+  const { DB } = authenticatedDb({ consent: false });
+  const response = await worker.fetch(
+    new Request("https://example.test/v1/connections/connection-123456/location-requests", {
+      method: "POST",
+      headers: { authorization: "Bearer " + "x".repeat(40) }
+    }),
+    { DB }
+  );
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, "consent_required");
+});
+
+test("location request creation is limited and expires within five minutes", async () => {
+  const { DB, statements } = authenticatedDb({ consent: true, pending: 0 });
+  const response = await worker.fetch(
+    new Request("https://example.test/v1/connections/connection-123456/location-requests", {
+      method: "POST",
+      headers: { authorization: "Bearer " + "x".repeat(40) }
+    }),
+    { DB }
+  );
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.equal(body.status, "pending");
+  assert.ok(body.requestId);
+  assert.ok(body.expiresAtMs > Date.now());
+  assert.ok(body.expiresAtMs <= Date.now() + 5 * 60 * 1000 + 100);
+  assert.ok(statements.some((entry) => entry.sql.includes("INSERT INTO location_requests")));
+});
