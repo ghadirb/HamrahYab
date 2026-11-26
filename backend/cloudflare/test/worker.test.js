@@ -195,8 +195,10 @@ test("connection revocation cancels pending and approved location requests atomi
   assert.equal(response.status, 200);
   assert.equal((await response.json()).status, "revoked");
   assert.equal(batches.length, 1);
+  assert.equal(batches[0].length, 3);
   assert.match(batches[0][0].sql, /UPDATE family_connections SET status = 'revoked'/);
   assert.match(batches[0][1].sql, /UPDATE location_requests SET status = 'cancelled'/);
+  assert.match(batches[0][2].sql, /UPDATE sharing_consents SET revoked_at_ms/);
 });
 
 test("consent revocation cancels open location requests in the same D1 batch", async () => {
@@ -282,4 +284,87 @@ test("location captured before request approval is rejected", async () => {
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error.code, "location_captured_before_approval");
   assert.equal(writes.some(sql => sql.includes("INSERT INTO latest_location_fixes")), false);
+});
+
+function invitationDb({ invitation = true, existing = null, recent = 0, inviter = "account-z" } = {}) {
+  const statements = [];
+  const batches = [];
+  const DB = {
+    prepare(sql) {
+      const statement = {
+        sql, values: [],
+        bind(...values) { this.values = values; return this; },
+        async first() {
+          if (sql.includes("SELECT s.id AS session_id")) return { session_id: "session-1", device_id: "device-1", account_id: "account-a" };
+          if (sql.includes("SELECT COUNT(*) AS total FROM connection_invitations")) return { total: recent };
+          if (sql.includes("SELECT id, inviter_account_id FROM connection_invitations")) return invitation ? { id: "invite-1", inviter_account_id: inviter } : null;
+          if (sql.includes("SELECT id, status FROM family_connections")) return existing;
+          if (sql.includes("SELECT id FROM family_connections")) return { id: "connection-1" };
+          return null;
+        },
+        async run() { statements.push({ sql, values: this.values }); return { meta: { changes: 1 } }; }
+      };
+      return statement;
+    },
+    async batch(items) {
+      batches.push(items.map(item => ({ sql: item.sql, values: item.values })));
+      return items.map(() => ({ meta: { changes: 1 } }));
+    }
+  };
+  return { DB, statements, batches };
+}
+
+test("invitation creation returns a high-entropy one-time code and stores only its hash", async () => {
+  const { DB, statements } = invitationDb();
+  const response = await worker.fetch(new Request("https://example.test/v1/invitations", {
+    method: "POST", headers: { authorization: "Bearer " + "x".repeat(40) }
+  }), { DB });
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.match(body.code, /^[A-Za-z0-9_-]{43}$/);
+  assert.ok(body.expiresAtMs > Date.now());
+  const insert = statements.find(item => item.sql.includes("INSERT INTO connection_invitations"));
+  assert.ok(insert);
+  assert.equal(insert.values[2].length, 64);
+  assert.notEqual(insert.values[2], body.code);
+});
+
+test("invitation creation enforces a per-account daily issuance cap", async () => {
+  const { DB, statements } = invitationDb({ recent: 10 });
+  const response = await worker.fetch(new Request("https://example.test/v1/invitations", {
+    method: "POST", headers: { authorization: "Bearer " + "x".repeat(40) }
+  }), { DB });
+  assert.equal(response.status, 429);
+  assert.equal((await response.json()).error.code, "invitation_limit_reached");
+  assert.equal(statements.some(item => item.sql.includes("INSERT INTO connection_invitations")), false);
+});
+
+test("invitation acceptance creates a canonical active connection", async () => {
+  const { DB, batches } = invitationDb();
+  const response = await worker.fetch(new Request("https://example.test/v1/invitations/accept", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ code: "A".repeat(43) })
+  }), { DB });
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.equal(body.status, "active");
+  assert.equal(body.connectionId, "connection-1");
+  assert.equal(batches.length, 1);
+  assert.match(batches[0][0].sql, /UPDATE connection_invitations SET status = 'accepted'/);
+  assert.match(batches[0][1].sql, /INSERT INTO family_connections/);
+  assert.match(batches[0][1].sql, /ON CONFLICT\(account_a_id, account_b_id\) DO UPDATE/);
+  assert.deepEqual(batches[0][1].values.slice(1, 3), ["account-a", "account-z"]);
+});
+
+test("an account cannot accept its own invitation", async () => {
+  const { DB, batches } = invitationDb({ inviter: "account-a" });
+  const response = await worker.fetch(new Request("https://example.test/v1/invitations/accept", {
+    method: "POST",
+    headers: { authorization: "Bearer " + "x".repeat(40), "content-type": "application/json" },
+    body: JSON.stringify({ code: "A".repeat(43) })
+  }), { DB });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, "self_invitation");
+  assert.equal(batches.length, 0);
 });
