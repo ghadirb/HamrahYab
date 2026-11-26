@@ -1,0 +1,12 @@
+{
+  "name": "hamrahyab-cloudflare-api",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20261126.0",
+    "typescript": "^5.9.3"
+  }
+}
