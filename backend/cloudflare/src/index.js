@@ -137,6 +137,19 @@ async function route(request, env, actor, requestId, url) {
     `).bind(crypto.randomUUID(), actor.account_id, id, now).run();
     return json({ requestId: id, status: "pending", expiresAtMs: expiresAt }, 201);
   }
+  const connectionRevokeMatch = path.match(/^\/v1\/connections\/([A-Za-z0-9_-]{12,80})$/);
+  if (method === "DELETE" && connectionRevokeMatch) {
+    const c = await env.DB.prepare("SELECT account_a_id, account_b_id FROM family_connections WHERE id = ? AND status = 'active' AND (account_a_id = ? OR account_b_id = ?) LIMIT 1").bind(connectionRevokeMatch[1], actor.account_id, actor.account_id).first();
+    if (!c) return fail(404, "connection_not_found", "ارتباط فعال پیدا نشد", requestId);
+    const other = c.account_a_id === actor.account_id ? c.account_b_id : c.account_a_id;
+    const now = nowMs();
+    const result = await env.DB.batch([
+      env.DB.prepare("UPDATE family_connections SET status = 'revoked', revoked_at_ms = ? WHERE id = ? AND status = 'active' AND (account_a_id = ? OR account_b_id = ?)").bind(now, connectionRevokeMatch[1], actor.account_id, actor.account_id),
+      env.DB.prepare("UPDATE location_requests SET status = 'cancelled' WHERE status IN ('pending', 'approved') AND ((requester_account_id = ? AND owner_account_id = ?) OR (requester_account_id = ? AND owner_account_id = ?))").bind(actor.account_id, other, other, actor.account_id)
+    ]);
+    if (!result?.[0]?.meta?.changes) return fail(409, "connection_unavailable", "ارتباط پیش از لغو تغییر کرده است", requestId);
+    return json({ connectionId: connectionRevokeMatch[1], status: "revoked" });
+  }
   const responseMatch = path.match(/^\/v1\/location-requests\/([A-Za-z0-9_-]{12,80})\/respond$/);
   if (method === "POST" && responseMatch) {
     const body = await readJson(request);
@@ -287,8 +300,8 @@ export default {
       return json({ status: "ok", service: "hamrahyab-api", version: 1 });
     }
     if (!url.pathname.startsWith("/v1/")) return fail(404, "not_found", "مسیر مورد نظر پیدا نشد", requestId);
-    if (!["GET", "POST"].includes(request.method)) {
-      return json({ error: { code: "method_not_allowed", message: "روش درخواست پشتیبانی نمی‌شود", requestId } }, 405, { allow: "GET, POST, OPTIONS" });
+    if (!["GET", "POST", "PUT", "DELETE"].includes(request.method)) {
+      return json({ error: { code: "method_not_allowed", message: "روش درخواست پشتیبانی نمی‌شود", requestId } }, 405, { allow: "GET, POST, PUT, DELETE, OPTIONS" });
     }
     if (!env.DB) return fail(503, "service_unavailable", "پایگاه داده آماده نیست", requestId);
     try {
