@@ -26,11 +26,12 @@ jobs:
           db = sqlite3.connect(":memory:")
           db.execute("PRAGMA foreign_keys = ON")
           db.executescript(sql)
+          db.executescript(Path("backend/cloudflare/migrations/0002_otp_auth.sql").read_text())
 
           expected = {
               "accounts", "devices", "device_sessions", "connection_invitations",
               "family_connections", "sharing_consents", "location_requests",
-              "latest_location_fixes", "audit_events"
+              "latest_location_fixes", "audit_events", "otp_challenges"
           }
           actual = {
               row[0] for row in db.execute(
@@ -40,8 +41,156 @@ jobs:
           missing = expected - actual
           assert not missing, f"Missing tables: {sorted(missing)}"
           assert not list(db.execute("PRAGMA foreign_key_check")), "Foreign key violations"
-          print(f"Validated {len(expected)} D1 tables and foreign keys.")
+          assert "phone_e164" in {row[1] for row in db.execute("PRAGMA table_info(accounts)")}
+          otp_columns = {row[1] for row in db.execute("PRAGMA table_info(otp_challenges)")}
+          assert {"phone_e164", "request_ip_hash", "code_hash", "attempts", "expires_at_ms"} <= otp_columns
+
+          # Exercise the OTP consume -> account -> device -> session SQL against SQLite.
+          otp_now = 1_800_000_000_100
+          phone = "+989123456789"
+          db.execute(
+              "INSERT INTO otp_challenges (id, phone_e164, request_ip_hash, code_hash, status, attempts, created_at_ms, expires_at_ms) "
+              "VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)",
+              ("otp-1", phone, "f" * 64, "e" * 64, otp_now, otp_now + 300_000)
+          )
+          assert db.execute(
+              "UPDATE otp_challenges SET status='consumed', verified_at_ms=? "
+              "WHERE id=? AND status='pending' AND expires_at_ms>? AND attempts<5",
+              (otp_now + 1, "otp-1", otp_now + 1)
+          ).rowcount == 1
+          db.execute(
+              "INSERT INTO accounts (id, created_at_ms, status, phone_e164) "
+              "SELECT ?, ?, 'active', ? WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE phone_e164=?)",
+              ("otp-account", otp_now + 1, phone, phone)
+          )
+          db.execute(
+              "INSERT INTO devices (id, account_id, display_name, platform, created_at_ms) "
+              "SELECT ?, id, ?, 'android', ? FROM accounts WHERE phone_e164=? AND status='active'",
+              ("otp-device", "Test phone", otp_now + 1, phone)
+          )
+          db.execute(
+              "INSERT INTO device_sessions (id, device_id, token_hash, created_at_ms, expires_at_ms) "
+              "SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM devices WHERE id=? AND revoked_at_ms IS NULL)",
+              ("otp-session", "otp-device", "d" * 64, otp_now + 1, otp_now + 2_592_000_001, "otp-device")
+          )
+          assert db.execute(
+              "SELECT COUNT(*) FROM device_sessions s JOIN devices d ON d.id=s.device_id "
+              "JOIN accounts a ON a.id=d.account_id WHERE a.phone_e164=?",
+              (phone,)
+          ).fetchone()[0] == 1
+
+          # Exercise the exact invitation insert/accept/upsert SQL against SQLite.
+          now = 1_800_000_000_000
+          db.executemany(
+              "INSERT INTO accounts (id, created_at_ms) VALUES (?, ?)",
+              [("account-a", now), ("account-z", now)]
+          )
+          invitation_insert = """
+              INSERT INTO connection_invitations
+                (id, inviter_account_id, invitee_account_id, code_hash, status, created_at_ms, expires_at_ms)
+              SELECT ?, ?, NULL, ?, 'pending', ?, ?
+              WHERE (SELECT COUNT(*) FROM connection_invitations
+                     WHERE inviter_account_id = ? AND created_at_ms > ?) < 10
+          """
+          values = ("invite-1", "account-z", "a" * 64, now, now + 1_800_000, "account-z", now - 86_400_000)
+          assert db.execute(invitation_insert, values).rowcount == 1
+          db.execute(
+              "UPDATE connection_invitations SET status='accepted', invitee_account_id=?, responded_at_ms=? "
+              "WHERE id=? AND status='pending' AND expires_at_ms>?",
+              ("account-a", now + 1, "invite-1", now + 1)
+          )
+          connection_upsert = """
+              INSERT INTO family_connections
+                (id, account_a_id, account_b_id, status, created_at_ms, revoked_at_ms)
+              SELECT ?, ?, ?, 'active', ?, NULL
+              WHERE EXISTS (
+                SELECT 1 FROM connection_invitations
+                WHERE id=? AND status='accepted' AND invitee_account_id=? AND responded_at_ms=?
+              )
+              ON CONFLICT(account_a_id, account_b_id) DO UPDATE SET
+                status='active', created_at_ms=excluded.created_at_ms, revoked_at_ms=NULL
+          """
+          upsert_values = ("connection-1", "account-a", "account-z", now + 1, "invite-1", "account-a", now + 1)
+          assert db.execute(connection_upsert, upsert_values).rowcount == 1
+          db.execute(
+              "INSERT INTO sharing_consents (id, owner_account_id, recipient_account_id, scope, granted_at_ms) "
+              "VALUES (?, ?, ?, 'request_location', ?)",
+              ("consent-1", "account-z", "account-a", now)
+          )
+          db.execute(
+              "UPDATE family_connections SET status='revoked', revoked_at_ms=? WHERE id=? AND status='active'",
+              (now + 2, "connection-1")
+          )
+          db.execute(
+              "UPDATE sharing_consents SET revoked_at_ms=? WHERE revoked_at_ms IS NULL "
+              "AND ((owner_account_id=? AND recipient_account_id=?) OR (owner_account_id=? AND recipient_account_id=?))",
+              (now + 2, "account-a", "account-z", "account-z", "account-a")
+          )
+          assert db.execute(
+              "SELECT COUNT(*) FROM sharing_consents WHERE revoked_at_ms IS NOT NULL"
+          ).fetchone()[0] == 1
+          # Re-accepting a fresh invitation reactivates the canonical pair without duplicate rows.
+          db.execute(
+              "INSERT INTO connection_invitations (id, inviter_account_id, invitee_account_id, code_hash, status, created_at_ms, expires_at_ms, responded_at_ms) "
+              "VALUES ('invite-2', 'account-z', 'account-a', ?, 'accepted', ?, ?, ?)",
+              ("b" * 64, now + 3, now + 1_800_000, now + 4)
+          )
+          assert db.execute(connection_upsert, ("connection-2", "account-a", "account-z", now + 4, "invite-2", "account-a", now + 4)).rowcount == 1
+          connection = db.execute(
+              "SELECT id, status FROM family_connections WHERE account_a_id=? AND account_b_id=?",
+              ("account-a", "account-z")
+          ).fetchone()
+          assert connection == ("connection-1", "active"), connection
+
+          # Execute the actual connection-list query and ensure it chooses the latest active device.
+          db.executemany(
+              "INSERT INTO devices (id, account_id, display_name, platform, created_at_ms, last_seen_at_ms, revoked_at_ms) "
+              "VALUES (?, 'account-z', ?, 'android', ?, ?, ?)",
+              [
+                  ("device-old", "Old phone", now - 100, now - 50, None),
+                  ("device-latest", "Latest phone", now - 10, now - 1, None),
+                  ("device-revoked", "Revoked phone", now, now, now)
+              ]
+          )
+          connection_list_sql = """
+              SELECT c.id AS connectionId,
+                CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END AS otherAccountId,
+                c.created_at_ms AS connectedAtMs,
+                COALESCE((SELECT d.display_name FROM devices d
+                  WHERE d.account_id = CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END
+                    AND d.revoked_at_ms IS NULL
+                  ORDER BY COALESCE(d.last_seen_at_ms, d.created_at_ms) DESC LIMIT 1),
+                  'دستگاه همراه') AS deviceName,
+                (SELECT d.last_seen_at_ms FROM devices d
+                  WHERE d.account_id = CASE WHEN c.account_a_id = ? THEN c.account_b_id ELSE c.account_a_id END
+                    AND d.revoked_at_ms IS NULL
+                  ORDER BY COALESCE(d.last_seen_at_ms, d.created_at_ms) DESC LIMIT 1) AS deviceLastSeenAtMs
+              FROM family_connections c
+              WHERE c.status = 'active' AND (c.account_a_id = ? OR c.account_b_id = ?)
+              ORDER BY c.created_at_ms DESC
+              LIMIT 100
+          """
+          listed = db.execute(connection_list_sql, ("account-a",) * 5).fetchall()
+          assert len(listed) == 1 and listed[0][3] == "Latest phone", listed
+          print(f"Validated {len(expected)} D1 tables, OTP migration, foreign keys, invitation SQL, reconnection, consent revocation and connection listing.")
           PY
+
+  backend-worker-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/cloudflare
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run Worker tests
+        run: npm test
 
   build:
     runs-on: ubuntu-latest
@@ -72,7 +221,7 @@ jobs:
           gradle-version: "8.13"
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug
+        run: gradle :app:testDebugUnitTest :app:assembleDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

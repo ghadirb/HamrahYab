@@ -1,0 +1,12 @@
+name = "hamrahyab-api"
+main = "src/index.js"
+compatibility_date = "2026-11-26"
+
+[env.staging]
+name = "hamrahyab-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "hamrahyab-staging"
+database_id = "REPLACE_WITH_STAGING_DATABASE_ID"
+migrations_dir = "migrations"

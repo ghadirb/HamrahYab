@@ -1,50 +1,80 @@
-# Cloudflare backend foundation
+# همراه‌یاب — Cloudflare Worker و D1
 
-This directory defines the first deployable backend boundary for HamrahYab. It intentionally does **not** contain production credentials, a hard-coded API key, or a live deployment.
+این بخش، پیاده‌سازی اولیه API سمت سرور است؛ هنوز هیچ Worker یا D1 در حساب Cloudflare ساخته یا مستقر نشده است. هیچ secret یا توکن Cloudflare نباید در Git یا APK قرار بگیرد.
 
-## Target architecture
+## اجزای فعلی
 
-- Cloudflare Worker: HTTPS API edge and request validation.
-- Cloudflare D1: relational metadata store (SQLite-compatible).
-- Cloudflare Queues or a provider adapter: asynchronous notification delivery, added only after a provider is selected and tested.
-- Optional Durable Objects: only if later measurements show a need for realtime coordination; not required for the MVP.
+- `src/index.js`: Worker مبتنی بر Fetch API و D1.
+- `migrations/0001_initial.sql`: ساختار اولیه داده.
+- `test/worker.test.js`: آزمون‌های مرز عمومی/خصوصی و کنترل رضایت/اتصال در جریان درخواست موقعیت.
+- `wrangler.toml`: الگوی تنظیمات؛ شناسه پایگاه داده باید پیش از استقرار جایگزین شود.
 
-The Android application must communicate only with the documented API contract. It must never contain a Cloudflare API token, D1 credential, service-role secret, or provider secret.
+## مسیرهای پیاده‌سازی‌شده
 
-## Initial setup (when ready to deploy)
+- `GET /health`: بررسی سلامت عمومی، بدون اتصال به D1.
+- `POST /v1/auth/otp/request`: درخواست کد شش‌رقمی برای شماره همراه ایران؛ اعتبار پنج دقیقه، فاصله ارسال حداقل ۶۰ ثانیه، حداکثر سه کد در ۱۵ دقیقه و ۱۰ کد در روز برای هر شماره، و ۲۰ درخواست در ۱۵ دقیقه برای هر IP هش‌شده؛ فراداده چالش‌ها پس از ۳۰ روز پاک می‌شود.
+- `POST /v1/auth/otp/verify`: مصرف یک‌باره OTP، ایجاد یا بازیابی حساب با شماره تأییدشده، ثبت دستگاه Android و صدور نشست ۳۰روزه؛ حداکثر پنج تلاش ناموفق.
+- `GET /v1/me`: اطلاعات حساب و دستگاه از نشست احراز هویت‌شده.
+- `GET /v1/location-requests/inbox`: درخواست‌های منتظر پاسخ برای همان دستگاه.
+- `POST /v1/invitations`: ساخت کد دعوت یک‌بارمصرف ۲۵۶بیتی با اعتبار ۳۰ دقیقه و سقف ۱۰ دعوت روزانه؛ فقط hash ذخیره می‌شود.
+- `POST /v1/invitations/accept`: پذیرش دعوت و ساخت/فعال‌سازی اتصال canonical بین دو حساب.
+- `POST /v1/invitations/decline`: رد دعوت و مصرف کد یک‌بارمصرف.
+- `PUT /v1/connections/{connectionId}/consents`: اعطای رضایت `request_location` یا `view_last_location` توسط صاحب داده، با انقضای اختیاری حداکثر یک‌ساله.
+- `DELETE /v1/consents/{consentId}`: لغو رضایت توسط صاحب داده؛ درخواست‌های باز وابسته به `request_location` نیز لغو می‌شوند.
+- `DELETE /v1/connections/{connectionId}`: قطع ارتباط توسط هر یک از دو عضو؛ درخواست‌های باز و رضایت‌های قبلی میان دو حساب نیز لغو می‌شوند.
+- `POST /v1/connections/{connectionId}/location-requests`: ایجاد درخواست برای طرف مقابل، فقط با اتصال فعال و رضایت دقیق `request_location`؛ انقضا پنج دقیقه و سقف پنج درخواست باز.
+- `POST /v1/location-requests/{id}/respond`: تأیید یا رد آشکار درخواست توسط دستگاه هدف.
+- `POST /v1/location-requests/{id}/location`: دریافت موقعیت فقط پس از تأیید درخواست و بررسی رضایت فعال `request_location`؛ زمان ثبت مختصات باید پس از زمان تأیید باشد.
+- `GET /v1/connections/{id}/last-location`: مشاهده آخرین موقعیت فقط با اتصال فعال و رضایت `view_last_location`؛ کنترل اتصال و رضایت در همان دستور خواندن نیز تکرار می‌شود؛ مختصات ثبت‌شده پیش از اعطای رضایت جدید قابل مشاهده نیست.
 
-1. Create a Cloudflare account and a dedicated Worker for HamrahYab.
-2. Create a D1 database in the intended region.
-3. Bind the database as `DB` in the Worker environment.
-4. Apply migrations in order using Wrangler.
-5. Configure a production API hostname and restrict CORS to the actual Android/web origins (native Android requests do not need permissive wildcard CORS).
-6. Add secrets through `wrangler secret put` or the Cloudflare dashboard. Never commit secrets to Git.
-7. Deploy to a staging environment first; run API, authorization, rate-limit, and retention tests before production.
+تمام مسیرهای `/v1` به Bearer session token معتبر نیاز دارند. Worker فقط SHA-256 توکن را با مقدار ذخیره‌شده مقایسه می‌کند؛ مقدار خام توکن در D1 ذخیره نمی‌شود. actor از نشست سمت سرور استخراج می‌شود و از accountId ارسالی کلاینت استفاده نمی‌شود.
 
-Example commands (database and Worker names are placeholders):
+## محدودیت‌های عمدی این مرحله
+
+- مسیرهای OTP و صدور نشست پیاده‌سازی شده‌اند، اما تا زمان اتصال یک SMS Gateway واقعی و آزمایش تحویل پیامک در شبکه‌های ایران، ورود عملیاتی نیست.
+- SMS Gateway یک Service Binding با نام `SMS_GATEWAY` است و باید درخواست POST در مسیر داخلی `/send` با JSON شامل `phone`، `code` و `purpose` بپذیرد؛ پاسخ موفق باید HTTP 2xx باشد. کلید ارائه‌دهنده پیامک فقط در خود Gateway به‌صورت secret نگهداری می‌شود.
+- Worker اصلی به secret مستقل `OTP_PEPPER` با حداقل ۳۲ نویسه نیاز دارد؛ این مقدار برای هش OTP استفاده می‌شود و نباید در Git یا APK قرار گیرد.
+- در Android رابط ورود OTP و کلاینت HTTPS قابل پیکربندی اضافه شده است. آدرس پایه فقط از Gradle property با نام `HAMRAHYAB_API_BASE_URL` گرفته می‌شود (برای نمونه build: `-PHAMRAHYAB_API_BASE_URL=https://<staging-host>`). اگر مقدار تنظیم نشود، ورود غیرفعال می‌ماند و امکانات محلی برنامه در دسترس هستند. توکن با AES-GCM و Android Keystore ذخیره می‌شود.
+- کلاینت فعلاً صدور OTP و ایجاد نشست را پیاده‌سازی می‌کند؛ استفاده از bearer token در تمام endpointهای خانوادگی، مدیریت انقضا/لغو نشست و ثبت دستگاه در کلاینت مرحله بعدی است.
+- لغو نشست و ثبت دستگاه هنوز endpoint عملیاتی ندارند.
+- اتصال به Push/SMS، rate limiting توزیع‌شده و سیاست حذف حساب هنوز باید تکمیل و آزمایش شوند.
+- بنابراین این نسخه برای داده واقعی کاربران یا انتشار عمومی آماده نیست.
+
+## اجرای آزمون‌ها
+
+از همین پوشه:
+
+```bash
+npm test
+```
+
+CI همین آزمون‌ها را با Node.js 22 اجرا می‌کند و جداگانه migration را با SQLite بررسی می‌کند.
+
+## استقرار آزمایشی (بعد از آماده‌شدن حساب)
+
+1. یک D1 جداگانه برای staging بساز.
+2. شناسه واقعی D1 را در تنظیمات Wrangler قرار بده؛ مقدار placeholder را نگه ندار.
+3. migration را روی staging اعمال کن.
+4. Worker را فقط روی محیط staging منتشر کن.
+5. قبل از هر داده واقعی، آزمون‌های احراز هویت، رضایت، لغو دسترسی، نرخ درخواست و حذف داده را اجرا کن.
+
+نمونه فرمان‌ها:
 
 ```bash
 npx wrangler d1 create hamrahyab-staging
-npx wrangler d1 migrations apply hamrahyab-staging --remote
+npx wrangler d1 migrations apply hamrahyab-staging --remote --env staging
 npx wrangler deploy --env staging
 ```
 
-## Security requirements before any real user data
+## الزامات امنیتی
 
-- Account authentication must be provided by a verified identity flow; do not treat a device ID or pairing code as authentication.
-- Store only hashes of bearer/refresh tokens and pairing codes.
-- Use short-lived, single-use pairing codes; enforce attempt limits and expiry on the server.
-- Authorize every operation against account ownership, active connection, scope-specific consent, and request expiry.
-- Make revocation effective immediately at the API authorization layer.
-- Do not accept client-supplied account ownership as proof of identity.
-- Apply per-account, per-device, and per-IP rate limits.
-- Validate coordinates, accuracy, timestamps, and payload sizes; reject implausible/future timestamps.
-- Never return a location to a requester unless the owner has an active matching consent.
-- Use TLS; avoid logging coordinates, tokens, pairing codes, phone numbers, or other sensitive payloads.
-- Define and enforce location retention and deletion before storing production location data.
-- Push messages contain opaque event IDs only, never coordinates or other location data.
-- A push notification is a wake-up hint, not authorization. The receiving app must fetch the request over authenticated HTTPS and show the user an explicit action.
+- هر عملیات داده‌ای باید نشست معتبر، مالکیت، اتصال فعال و رضایت دقیق را بررسی کند.
+- لغو رضایت یا اتصال باید فوراً روی صندوق درخواست، تأیید و ارسال موقعیت اثر کند؛ کنترل‌های حساس در دستور SQL نهایی نوشتن نیز دوباره اعمال می‌شوند تا پنجره race میان بررسی و ثبت بسته شود.
+- کد دعوت/OTP باید کوتاه‌عمر، یک‌بارمصرف و rate-limited باشد و فقط hash آن ذخیره شود. OTP با pepper سمت سرور هش می‌شود؛ محدودیت‌ها در خود دستور INSERT نیز دوباره اعمال می‌شوند تا رقابت درخواست‌های هم‌زمان سقف را دور نزند.
+- مختصات، توکن، OTP و متن خام درخواست نباید وارد log شوند.
+- Push فقط شناسه opaque رویداد را حمل می‌کند؛ اعلان جایگزین مجوز نیست.
+- تاریخچه مسیر در MVP ذخیره نمی‌شود؛ فقط آخرین موقعیت مجاز نگهداری می‌شود.
+- محدودیت اندازه payload و اعتبارسنجی مختصات/زمان در Worker اعمال می‌شود.
+- قبل از انتشار عمومی باید rate limiting واقعی، سیاست retention/deletion و آزمون نفوذ تکمیل شوند.
 
-## Current status
-
-This is a foundation and migration only. No Cloudflare resource has been created, no Worker is deployed, and no remote location sharing is operational yet. Provider selection (including Iranian SMS and push delivery) remains a validation task.
+**وضعیت:** پیاده‌سازی API پایه و آزمون‌های اولیه در شاخه توسعه؛ بدون استقرار Cloudflare و بدون ارتباط عملیاتی بین گوشی‌ها.

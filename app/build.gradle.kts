@@ -5,6 +5,9 @@ plugins {
     id("org.jetbrains.kotlin.kapt")
 }
 
+val hamrahYabApiBaseUrl = providers.gradleProperty("HAMRAHYAB_API_BASE_URL").orElse("").get()
+val hamrahYabApiBaseUrlLiteral = "\"${hamrahYabApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
 android {
     namespace = "ir.maliarpro.hamrahyab"
     compileSdk = 36
@@ -17,6 +20,7 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "API_BASE_URL", hamrahYabApiBaseUrlLiteral)
     }
 
     buildTypes {
@@ -56,6 +60,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     // Room persistence for local location and sharing-consent data.
     implementation("androidx.room:room-runtime:2.8.3")
