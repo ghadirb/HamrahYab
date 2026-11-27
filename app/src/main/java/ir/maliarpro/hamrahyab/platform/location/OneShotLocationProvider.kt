@@ -21,7 +21,7 @@ import ir.maliarpro.hamrahyab.core.location.LocationSnapshot
  */
 class OneShotLocationProvider(
     context: Context,
-    private val timeoutMillis: Long = 20_000L,
+    private val timeoutMillis: Long = 45_000L,
     private val qualityPolicy: LocationQualityPolicy = LocationQualityPolicy()
 ) {
     private val appContext = context.applicationContext
@@ -48,6 +48,23 @@ class OneShotLocationProvider(
             return
         }
 
+        val locationEnabled = try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                manager.isLocationEnabled
+            } else {
+                manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+            }
+        } catch (error: Exception) {
+            callback(Result.failure(IllegalStateException("وضعیت مکان‌یاب گوشی قابل بررسی نیست؛ تنظیمات مکان را بررسی کنید.")))
+            return
+        }
+
+        if (!locationEnabled) {
+            callback(Result.failure(IllegalStateException("مکان‌یاب اصلی گوشی خاموش است. از دکمه تنظیمات مکان آن را روشن کنید و دوباره تلاش کنید.")))
+            return
+        }
+
         val providers = try {
             manager.getProviders(true).filter {
                 it == LocationManager.GPS_PROVIDER || it == LocationManager.NETWORK_PROVIDER
@@ -58,7 +75,7 @@ class OneShotLocationProvider(
         }
 
         if (providers.isEmpty()) {
-            callback(Result.failure(IllegalStateException("مکان‌یاب گوشی خاموش است یا ارائه‌دهنده‌ای در دسترس نیست.")))
+            callback(Result.failure(IllegalStateException("مکان‌یاب روشن است، اما هیچ ارائه‌دهنده موقعیتی در دسترس نیست. GPS و سرویس‌های مکان را بررسی کنید.")))
             return
         }
 
@@ -119,6 +136,10 @@ class OneShotLocationProvider(
             } catch (error: SecurityException) {
                 finish(Result.failure(error))
                 return
+            } catch (error: IllegalArgumentException) {
+                // Some Android builds reject updates for a provider reported as enabled.
+                listeners.remove(listener)
+                runCatching { manager.removeUpdates(listener) }
             }
         }
 
