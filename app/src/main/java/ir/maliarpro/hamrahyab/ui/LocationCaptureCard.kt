@@ -2,6 +2,8 @@ package ir.maliarpro.hamrahyab.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +16,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -30,13 +36,17 @@ fun LocationCaptureCard(
     onCapture: () -> Unit
 ) {
     val context = LocalContext.current
+    var permissionMessage by remember { mutableStateOf<String?>(null) }
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         if (result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         ) {
+            permissionMessage = null
             onCapture()
+        } else {
+            permissionMessage = "مجوز مکان داده نشد. اجازه دسترسی تقریبی یا دقیق را فعال کنید."
         }
     }
 
@@ -78,6 +88,14 @@ fun LocationCaptureCard(
                 Text(if (isCapturing) "در حال دریافت موقعیت..." else "دریافت موقعیت فعلی")
             }
             Text(status, style = MaterialTheme.typography.bodySmall)
+            permissionMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            Button(onClick = {
+                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            }) {
+                Text("باز کردن تنظیمات مکان گوشی")
+            }
             if (lastLocation != null) {
                 Text(
                     "آخرین ثبت: " + DateFormat.getDateTimeInstance()
